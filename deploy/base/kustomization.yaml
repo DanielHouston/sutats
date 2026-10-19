@@ -1,0 +1,6 @@
+# Plain Kubernetes base: kubectl apply -k deploy/base
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sutats.yaml
+  - timescaledb.yaml

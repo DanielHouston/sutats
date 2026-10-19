@@ -1,0 +1,49 @@
+# Every field sutats understands in the incidents ConfigMap.
+#
+# Put this under the `incidents.yaml` key of the sutats-incidents ConfigMap:
+#
+#   kubectl -n sutats create configmap sutats-incidents \
+#     --from-file=incidents.yaml=examples/incidents.yaml \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# Or run locally against it: sutats --incidents-file examples/incidents.yaml
+#
+# Rules:
+# - `impact` is one of: none, maintenance, degraded, outage.
+# - `components` lists display names (the sutats.io/component value). Leave it
+#   out to affect every component.
+# - Times are RFC 3339 (2026-10-15T09:30:00Z). Dates like 2026-10-15 also work.
+# - Updates are shown newest first. The last update's status decides whether
+#   the incident is open: `resolved` or `completed` closes it.
+# - Add `scheduled_for` (and optionally `scheduled_until`) to make the entry a
+#   maintenance window. It appears under "Scheduled maintenance" until it
+#   starts, then marks the named components "Under maintenance" (which is not
+#   counted as downtime) until `scheduled_until` passes or you post `completed`.
+incidents:
+  - id: 2026-10-15-login-errors
+    title: Elevated login failures
+    impact: degraded
+    components: [Auth]
+    updates:
+      - at: 2026-10-15T08:12:00Z
+        status: investigating
+        body: Some sign-in attempts are returning errors. We are investigating.
+      - at: 2026-10-15T08:31:00Z
+        status: identified
+        body: One auth replica is failing health checks after a node reboot. A replacement is starting.
+      - at: 2026-10-15T08:50:00Z
+        status: monitoring
+        body: The replacement replica is serving traffic. Error rates are back to normal.
+      - at: 2026-10-15T09:20:00Z
+        status: resolved
+        body: Resolved.
+
+  - title: Database storage upgrade
+    impact: maintenance
+    components: [PostgreSQL, API]
+    scheduled_for: 2026-10-20T01:00:00Z
+    scheduled_until: 2026-10-20T03:00:00Z
+    updates:
+      - at: 2026-10-13T12:00:00Z
+        status: scheduled
+        body: We will move the primary database to faster storage. Expect up to 10 minutes of read-only mode.

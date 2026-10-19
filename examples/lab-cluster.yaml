@@ -1,0 +1,365 @@
+# A "lab" namespace whose services misbehave on a known schedule, for
+# watching a status page do its thing over a week. Every component says in
+# its description when it will fail, so you know when to look.
+#
+#   kubectl apply -f examples/lab-cluster.yaml
+#
+# All times are UTC. The services are one small Python HTTP server driven by
+# environment variables (see the ConfigMap); "db" is a StatefulSet scaled to
+# zero and back by two CronJobs, which uses the OpenShift cli image. On
+# plain Kubernetes swap it for docker.io/bitnami/kubectl.
+#
+# What to expect on the page:
+#   web      stays green the whole week (the control).
+#   api      endpoint slow 14:00-14:20 daily -> Degraded (pods stay ready);
+#            endpoint returns 503 on Wednesdays 10:00-10:30 -> Outage.
+#   worker   each pod crashes every 8 hours (staggered) and takes 4 minutes
+#            to come back -> Degraded (1 of 2 ready) for a few minutes.
+#   search   readiness fails for 10 minutes every 6 hours -> Outage from
+#            the pod check while its endpoint stays fine.
+#   db       scaled to zero 03:00-03:20 daily -> Under maintenance, with a
+#            matching maintenance window posted as an incident.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+  labels:
+    sutats.io/page: lab
+  annotations:
+    sutats.io/page-title: "Lab"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: faulty-server
+  namespace: lab
+data:
+  server.py: |
+    # A tiny HTTP server that fails on a schedule. All times UTC.
+    #   SLOW_WINDOWS   "14:00-14:20"            /healthz takes 3 s during these daily windows
+    #   FAIL_WINDOWS   "Wed 10:00-10:30"        /healthz returns 503 (optional weekday prefix)
+    #   READY_FAIL     "6h:10m"                 /ready returns 503 for 10 m every 6 h (from epoch)
+    #   CRASH_EVERY    "8h"                     process exits on this period, staggered per pod
+    #   START_DELAY    "240"                    seconds before /ready succeeds after start
+    import hashlib, os, socket, threading, time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    def dur(s):
+        n, u = float(s[:-1]), s[-1]
+        return n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[u]
+
+    def in_windows(spec):
+        if not spec:
+            return False
+        now = time.gmtime()
+        for w in spec.split(","):
+            parts = w.strip().split()
+            day = None
+            if len(parts) == 2:
+                day, parts = parts[0], parts[1:]
+            a, b = parts[0].split("-")
+            if day and DAYS.index(day) != now.tm_wday:
+                continue
+            hm = now.tm_hour * 60 + now.tm_min
+            ah, am = map(int, a.split(":")); bh, bm = map(int, b.split(":"))
+            if ah * 60 + am <= hm < bh * 60 + bm:
+                return True
+        return False
+
+    def in_period(spec):
+        if not spec:
+            return False
+        period, length = spec.split(":")
+        return (time.time() % dur(period)) < dur(length)
+
+    STARTED = time.time()
+    START_DELAY = float(os.environ.get("START_DELAY", "0"))
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def reply(self, code, body):
+            self.send_response(code); self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if self.path.startswith("/ready"):
+                if time.time() - STARTED < START_DELAY or in_period(os.environ.get("READY_FAIL")):
+                    return self.reply(503, b"not ready\n")
+                return self.reply(200, b"ready\n")
+            if self.path.startswith("/healthz"):
+                if in_windows(os.environ.get("FAIL_WINDOWS")):
+                    return self.reply(503, b"failing on schedule\n")
+                if in_windows(os.environ.get("SLOW_WINDOWS")):
+                    time.sleep(3)
+                return self.reply(200, b"ok\n")
+            return self.reply(200, b"hello from %s\n" % socket.gethostname().encode())
+
+    def crasher():
+        spec = os.environ.get("CRASH_EVERY")
+        if not spec:
+            return
+        period = dur(spec)
+        # Stagger pods by up to 10 minutes so replicas do not all die together.
+        jitter = int(hashlib.md5(socket.gethostname().encode()).hexdigest(), 16) % 600
+        while True:
+            wait = period - ((time.time() - jitter) % period)
+            time.sleep(max(wait, 1))
+            os._exit(3)
+
+    threading.Thread(target=crasher, daemon=True).start()
+    ThreadingHTTPServer(("", 8080), H).serve_forever()
+---
+# ---- web: the control, never fails ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: lab
+  annotations:
+    sutats.io/component: "Web"
+    sutats.io/group: "Front door"
+    sutats.io/description: "Control: should stay green all week"
+    sutats.io/order: "10"
+    sutats.io/probe.homepage: http://web.lab.svc:8080/
+    sutats.io/probe.health: http://web.lab.svc:8080/healthz
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - name: server
+          image: docker.io/library/python:3.12-alpine
+          command: ["python", "/app/server.py"]
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8080 }, periodSeconds: 5 }
+          volumeMounts: [{ name: app, mountPath: /app }]
+          resources: { requests: { cpu: 10m, memory: 32Mi } }
+      volumes: [{ name: app, configMap: { name: faulty-server } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: lab }
+spec: { selector: { app: web }, ports: [{ port: 8080, targetPort: 8080 }] }
+---
+# ---- api: endpoint slow daily, down on Wednesdays; pods always ready ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: lab
+  annotations:
+    sutats.io/component: "API"
+    sutats.io/group: "Front door"
+    sutats.io/description: "Slow 14:00-14:20 UTC daily; returns 503 Wednesdays 10:00-10:30 UTC"
+    sutats.io/order: "20"
+    sutats.io/probes: |
+      - name: Health
+        url: http://api.lab.svc:8080/healthz
+        timeout: 5s
+        degraded_after: 2s
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec:
+      containers:
+        - name: server
+          image: docker.io/library/python:3.12-alpine
+          command: ["python", "/app/server.py"]
+          env:
+            - { name: SLOW_WINDOWS, value: "14:00-14:20" }
+            - { name: FAIL_WINDOWS, value: "Wed 10:00-10:30" }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8080 }, periodSeconds: 5 }
+          volumeMounts: [{ name: app, mountPath: /app }]
+          resources: { requests: { cpu: 10m, memory: 32Mi } }
+      volumes: [{ name: app, configMap: { name: faulty-server } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: api, namespace: lab }
+spec: { selector: { app: api }, ports: [{ port: 8080, targetPort: 8080 }] }
+---
+# ---- worker: each pod crashes every 8 hours, 4 minutes to recover ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: lab
+  annotations:
+    sutats.io/component: "Worker"
+    sutats.io/group: "Back office"
+    sutats.io/description: "Each pod crashes every 8 h (staggered) and takes 4 min to come back"
+    sutats.io/order: "30"
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      containers:
+        - name: server
+          image: docker.io/library/python:3.12-alpine
+          command: ["python", "/app/server.py"]
+          env:
+            - { name: CRASH_EVERY, value: "8h" }
+            - { name: START_DELAY, value: "240" }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8080 }, periodSeconds: 5 }
+          volumeMounts: [{ name: app, mountPath: /app }]
+          resources: { requests: { cpu: 10m, memory: 32Mi } }
+      volumes: [{ name: app, configMap: { name: faulty-server } }]
+---
+# ---- search: readiness fails 10 minutes every 6 hours; endpoint stays fine ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search
+  namespace: lab
+  annotations:
+    sutats.io/component: "Search"
+    sutats.io/group: "Back office"
+    sutats.io/description: "Pod unready for 10 min every 6 h (00:00, 06:00, 12:00, 18:00 UTC)"
+    sutats.io/order: "40"
+    sutats.io/probe: http://search.lab.svc:8080/healthz
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: search } }
+  template:
+    metadata: { labels: { app: search } }
+    spec:
+      containers:
+        - name: server
+          image: docker.io/library/python:3.12-alpine
+          command: ["python", "/app/server.py"]
+          env:
+            - { name: READY_FAIL, value: "6h:10m" }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8080 }, periodSeconds: 5 }
+          volumeMounts: [{ name: app, mountPath: /app }]
+          resources: { requests: { cpu: 10m, memory: 32Mi } }
+      volumes: [{ name: app, configMap: { name: faulty-server } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: search, namespace: lab }
+spec: { selector: { app: search }, ports: [{ port: 8080, targetPort: 8080 }] }
+---
+# ---- db: scaled to zero 03:00-03:20 daily by CronJobs ----
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: lab
+  annotations:
+    sutats.io/component: "Database"
+    sutats.io/group: "Back office"
+    sutats.io/description: "Scaled to zero 03:00-03:20 UTC daily (shows as maintenance)"
+    sutats.io/order: "50"
+spec:
+  serviceName: db
+  replicas: 1
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec:
+      containers:
+        - name: server
+          image: docker.io/library/python:3.12-alpine
+          command: ["python", "/app/server.py"]
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8080 }, periodSeconds: 5 }
+          volumeMounts: [{ name: app, mountPath: /app }]
+          resources: { requests: { cpu: 10m, memory: 32Mi } }
+      volumes: [{ name: app, configMap: { name: faulty-server } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: db, namespace: lab }
+spec: { clusterIP: None, selector: { app: db }, ports: [{ port: 8080 }] }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: lab-ops, namespace: lab }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: lab-ops, namespace: lab }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale", "statefulsets"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: lab-ops, namespace: lab }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: lab-ops }
+subjects: [{ kind: ServiceAccount, name: lab-ops, namespace: lab }]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: db-down, namespace: lab }
+spec:
+  # Skip a run missed by more than 10 minutes (the cluster was off) instead
+  # of running it late. Otherwise both jobs fire together on the next start
+  # and the database ends up in whichever state finished last.
+  startingDeadlineSeconds: 600
+  schedule: "0 3 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: lab-ops
+          restartPolicy: Never
+          containers:
+            - name: scale
+              image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+              command: ["oc", "-n", "lab", "scale", "statefulset/db", "--replicas=0"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: db-up, namespace: lab }
+spec:
+  # Skip a run missed by more than 10 minutes (the cluster was off) instead
+  # of running it late. Otherwise both jobs fire together on the next start
+  # and the database ends up in whichever state finished last.
+  startingDeadlineSeconds: 600
+  schedule: "20 3 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: lab-ops
+          restartPolicy: Never
+          containers:
+            - name: scale
+              image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+              command: ["oc", "-n", "lab", "scale", "statefulset/db", "--replicas=1"]
+---
+# The database window, announced as planned maintenance (one-off incidents
+# cannot recur, so this covers the first night; the bars show the rest).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sutats-incidents
+  namespace: lab
+data:
+  incidents.yaml: |
+    incidents:
+      - title: Nightly database maintenance
+        impact: maintenance
+        components: [Database]
+        scheduled_for: 2026-10-19T03:00:00Z
+        scheduled_until: 2026-10-19T03:20:00Z
+        updates:
+          - at: 2026-10-18T21:00:00Z
+            status: scheduled
+            body: The database is scaled down for 20 minutes each night at 03:00 UTC.

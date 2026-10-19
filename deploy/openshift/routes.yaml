@@ -1,0 +1,36 @@
+# One Route for the default page and one per team page. OpenShift routers
+# do not serve wildcard hosts unless wildcard routes are enabled, so each
+# page host is listed explicitly. Edge TLS uses the router's certificate.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sutats
+  namespace: sutats
+spec:
+  host: status.apps-crc.testing
+  to:
+    kind: Service
+    name: sutats
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+# Page hosts follow --page-host={slug}-status.apps-crc.testing. Add one of
+# these per page slug.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sutats-shop
+  namespace: sutats
+spec:
+  host: shop-status.apps-crc.testing
+  to:
+    kind: Service
+    name: sutats
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

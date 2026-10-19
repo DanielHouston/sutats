@@ -1,0 +1,84 @@
+# A single-node TimescaleDB for sutats history. Good enough to start; for
+# production use a managed Postgres with the timescaledb extension, or the
+# Timescale/CloudNativePG operators, and point DATABASE_URL at it.
+#
+#   kubectl apply -f deploy/timescaledb.yaml
+#
+# Change the password in both places below before applying.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sutats-db
+  namespace: sutats
+type: Opaque
+stringData:
+  password: change-me
+  url: postgres://sutats:change-me@sutats-db.sutats.svc:5432/sutats?sslmode=disable
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sutats-db
+  namespace: sutats
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: sutats-db
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sutats-db
+  namespace: sutats
+spec:
+  serviceName: sutats-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sutats-db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sutats-db
+    spec:
+      securityContext:
+        fsGroup: 70
+      containers:
+        - name: timescaledb
+          image: timescale/timescaledb:latest-pg16
+          env:
+            - name: POSTGRES_USER
+              value: sutats
+            - name: POSTGRES_DB
+              value: sutats
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sutats-db
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "sutats", "-d", "sutats"]
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

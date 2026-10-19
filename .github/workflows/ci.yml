@@ -1,0 +1,119 @@
+# CI: vet and test (with a real TimescaleDB), then build the image and push
+# it to the container registry on main and on tags. Runs on GitHub Actions
+# and, unchanged, on Gitea Actions.
+#
+# By default the image goes to the GitHub Container Registry as
+# ghcr.io/<owner>/<repo>, logged in with the workflow's own token. To push
+# somewhere else (for example from Gitea), set on the repository:
+#   variables  REGISTRY (such as registry.example.com) and IMAGE (such as
+#              team/sutats)
+#   secrets    REGISTRY_USER / REGISTRY_PASSWORD, credentials for it
+# Tags pushed: the branch name, the short commit sha, vX.Y.Z for version
+# tags, and latest on the default branch.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_PASSWORD: sutats
+          POSTGRES_DB: sutats_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      # On GitHub-hosted runners the job runs on the VM and service ports
+      # are mapped to localhost. On Gitea's act runner the job runs in a
+      # container and the service is reachable by its name instead. Resolve
+      # whichever works, then wait for the port rather than trusting the
+      # health-check options, which not every runner honours.
+      - name: Find the database
+        run: |
+          host=localhost
+          if getent hosts timescaledb >/dev/null 2>&1; then host=timescaledb; fi
+          echo "DB_HOST=$host" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/$host/5432) 2>/dev/null; then echo "database up at $host after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "database at $host never answered on 5432"; exit 1
+      - name: Test
+        env:
+          SUTATS_TEST_DATABASE_URL: postgres://postgres:sutats@${{ env.DB_HOST }}:5432/sutats_test?sslmode=disable
+        run: go test ./...
+
+  image:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The workflow token may push to the GitHub Container Registry.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ${{ vars.REGISTRY || 'ghcr.io' }}
+      IMAGE: ${{ vars.IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, for the version below
+      - name: Version
+        id: version
+        # v1.0.0 on a tag, v1.0.0-3-gabc1234 on later commits.
+        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+      # Build on the host's own Docker daemon rather than a throwaway
+      # BuildKit container. The self-hosted runner is persistent, so layers
+      # and the Dockerfile's cache mounts survive between runs, and nothing
+      # has to reach the Actions cache server (which a separate BuildKit
+      # container can't). On GitHub-hosted runners this just builds uncached.
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
+      - name: Registry host
+        id: reg
+        # Registry names must be lowercase; the repository name may not be.
+        run: |
+          echo "host=$(echo "$REGISTRY" | sed -E 's#^https?://##')" >> "$GITHUB_OUTPUT"
+          echo "image=$(echo "${IMAGE:-$GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.host }}
+          username: ${{ secrets.REGISTRY_USER || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.reg.outputs.host }}/${{ steps.reg.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.version.outputs.version }}

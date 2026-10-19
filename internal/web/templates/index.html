@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Headline}} · {{.Title}}</title>
+<meta name="description" content="Live status of {{.Title}} services.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-status="{{.Status}}">
+<a class="skip" href="#board">Skip to status</a>
+<header class="masthead">
+  <a class="masthead__brand" href="/">{{.Title}}</a>
+  <nav class="masthead__nav">
+    {{range .Pages}}<a href="{{.URL}}">{{.Title}}</a>{{end}}
+    <a href="/api/v1/status">JSON</a>
+    <span>Updated <time id="updated" datetime="{{rfc3339 .GeneratedAt}}">{{ago .GeneratedAt}}</time></span>
+  </nav>
+</header>
+
+<main id="board" aria-live="polite">
+{{template "board" .}}
+</main>
+
+<footer class="foot">
+  <p>Status is read live from the Kubernetes cluster. Uptime counts time a component was degraded or down over the last 90 days; planned maintenance is not counted.</p>
+</footer>
+<script src="/static/app.js" defer></script>
+</body>
+</html>
+
+{{/* One bar. Clickable cells are buttons that open a day breakdown. */}}
+{{define "bar"}}{{if .Clickable}}<div class="bar bar--clickable" data-key="{{.Key}}" aria-label="{{.Label}}">{{range .Days}}<button type="button" class="bar__day bar__day--{{.Status}}" data-date="{{.Date}}" title="{{dayTitle .}}" aria-label="{{dayTitle .}}"></button>{{end}}</div>{{else}}<div class="bar" role="img" aria-label="{{.Label}}">{{range .Days}}<i class="bar__day bar__day--{{.Status}}" title="{{dayTitle .}}"></i>{{end}}</div>{{end}}{{end}}
+
+{{/* One signal row under a component: label, thin bar, uptime. */}}
+{{define "sub"}}
+{{with .Signal}}
+<div class="row row--sub">
+  <div class="row__label" title="{{.Name}}{{with .Detail}} · {{.}}{{end}}{{with .CountNote}} · {{.}}{{end}}"><span class="sub__name{{if bad .Status}} sub__name--bad{{end}}">{{.Name}}</span> <span class="sub__detail{{if bad .Status}} sub__detail--bad{{end}}">{{.Detail}}</span>{{with .CountNote}}<span class="sub__note">{{.}}</span>{{end}}</div>
+  <div class="row__bar">{{if .HasBar}}{{template "bar" (bar .History (printf "%s, 90 days, %s uptime" .Name (pct .Uptime)) (signalKey $.ID .Name) $.Detail)}}{{end}}</div>
+  <div class="row__num">{{if .HasBar}}{{pct .Uptime}}{{end}}</div>
+</div>
+{{end}}
+{{end}}
+
+{{define "board"}}
+<section class="hero">
+  <h1 class="hero__title">{{.Headline}}</h1>
+  {{if .Problems}}
+  <ul class="problems">
+    {{range .Problems}}
+    <li class="problem">
+      <a href="#{{.Anchor}}">{{.Name}}</a>
+      <span class="problem__status">{{.Status.Label}}</span>
+      {{if .Reason}}<span class="problem__reason">{{.Reason}}</span>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="hero__meta">
+    {{if .ClusterConnected}}{{plural .ComponentCount "component" "components"}}, all operational.{{else}}Not connected to the cluster yet. Showing the last known state.{{end}}
+  </p>
+  {{end}}
+</section>
+
+<div class="ledger ledger--system">
+  <div class="row row--legend">
+    <div class="row__label"></div>
+    <div class="row__bar"><div class="legend"><span>90 days ago</span><span>Today</span></div></div>
+    <div class="row__num"></div>
+  </div>
+  <div class="row row--system">
+    <div class="row__label"><span class="row__name">All components</span></div>
+    <div class="row__bar">{{template "bar" (bar .History (printf "Whole system, 90 days, %s uptime" (pct .Uptime)) "" false)}}</div>
+    <div class="row__num">{{pct .Uptime}}</div>
+  </div>
+</div>
+
+{{if .ActiveIncidents}}
+<section class="section" aria-labelledby="active-h">
+  <h2 id="active-h" class="section__title">Active incidents</h2>
+  {{range .ActiveIncidents}}{{template "incident" .}}{{end}}
+</section>
+{{end}}
+
+<section class="section section--components" aria-labelledby="components-h">
+  <h2 id="components-h" class="visually-hidden">Components</h2>
+  {{if not .Groups}}
+  <div class="empty">
+    <p>No components to show.</p>
+    <p class="empty__hint">Add the annotation <code>sutats.io/component: "Name"</code> to a Deployment, StatefulSet or DaemonSet, or run with <code>--all-workloads</code>.</p>
+  </div>
+  {{end}}
+  {{range .Groups}}
+  {{$ga := .Anchor}}
+  <div class="ledger group" id="{{$ga}}">
+    {{if .Name}}
+    <div class="row row--group{{if .Collapsed}} row--group-collapsed{{end}}">
+      <div class="row__label">
+        <h3 class="group__name"><button type="button" class="row__toggle" data-target="members-{{$ga}}" aria-controls="members-{{$ga}}" aria-expanded="{{not .Collapsed}}">{{.Name}}<span class="row__chev" aria-hidden="true"></span></button></h3>
+        <span class="group__meta">{{plural (len .Components) "component" "components"}} · <span class="status status--{{.Status}}">{{.Status.Label}}</span></span>
+      </div>
+      <div class="row__bar">{{template "bar" (bar .History (printf "%s, 90 days, %s uptime" .Name (pct .Uptime)) "" false)}}</div>
+      <div class="row__num">{{pct .Uptime}}</div>
+    </div>
+    {{end}}
+    <div class="members" id="members-{{$ga}}"{{if .Collapsed}} hidden{{end}}>
+    {{range .Components}}
+    {{$id := .ID}}{{$a := .Anchor}}{{$detail := $.HasDetail}}
+    <article class="row row--component" id="{{$a}}">
+      <div class="row__label">
+        <div class="row__name">
+          {{if .HasDetail}}<button type="button" class="row__toggle" data-target="subs-{{$a}}" aria-controls="subs-{{$a}}" aria-expanded="{{.Attention}}">{{.Name}}<span class="row__chev" aria-hidden="true"></span></button>{{else}}{{.Name}}{{end}}
+        </div>
+        <div class="row__status">
+          <span class="status status--{{.Status}}">{{.Status.Label}}</span>
+          {{with .Reason}}<span class="row__reason">{{.}}</span>{{else}}{{with .PodsDetail}}<span class="row__reason">{{.}}</span>{{end}}{{end}}
+        </div>
+        {{if .Description}}<div class="row__desc">{{.Description}}</div>{{end}}
+      </div>
+      <div class="row__bar">{{template "bar" (bar .History (printf "%s, 90 days, %s uptime" .Name (pct .Uptime)) .ID $detail)}}</div>
+      <div class="row__num">{{pct .Uptime}}</div>
+    </article>
+    {{if .HasDetail}}
+    <div class="subs" id="subs-{{$a}}"{{if not .Attention}} hidden{{end}}>
+      <div class="row row--subtitle"><div class="row__label">Kubernetes</div></div>
+      {{range .Kubernetes}}{{template "sub" (subWithDetail $id . $detail)}}{{end}}
+      {{with .Ingress}}
+      <div class="row row--subtitle"><div class="row__label">Ingress</div></div>
+      {{range .}}{{template "sub" (subWithDetail $id . $detail)}}{{end}}
+      {{end}}
+      {{with .Endpoints}}
+      <div class="row row--subtitle"><div class="row__label">HTTP probes</div></div>
+      {{range .}}{{template "sub" (subWithDetail $id . $detail)}}{{end}}
+      {{end}}
+      {{with .Config}}
+      <div class="row row--subtitle"><div class="row__label">Configuration</div></div>
+      {{range .}}{{template "sub" (subWithDetail $id . $detail)}}{{end}}
+      {{end}}
+    </div>
+    {{end}}
+    {{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
+
+{{if .Scheduled}}
+<section class="section" aria-labelledby="sched-h">
+  <h2 id="sched-h" class="section__title">Scheduled maintenance</h2>
+  {{range .Scheduled}}{{template "incident" .}}{{end}}
+</section>
+{{end}}
+
+<section class="section" aria-labelledby="past-h">
+  <h2 id="past-h" class="section__title">Past incidents <span class="section__sub">last 30 days</span></h2>
+  {{if .PastIncidents}}
+    {{range .PastIncidents}}{{template "incident" .}}{{end}}
+  {{else}}
+    <p class="quiet">No incidents in the last 30 days.</p>
+  {{end}}
+</section>
+{{end}}
+
+{{/* One incident as a single line: title, impact, latest word, when. The
+     full timeline and the affected components sit behind a disclosure. */}}
+{{define "incident"}}
+{{$a := .Anchor}}
+<article class="incident{{if .Resolved}} incident--resolved{{end}}" id="{{$a}}">
+  <div class="incident__line">
+    <h3 class="incident__title"><button type="button" class="row__toggle" data-target="body-{{$a}}" aria-controls="body-{{$a}}" aria-expanded="false">{{.Title}}<span class="row__chev" aria-hidden="true"></span></button></h3>
+    {{if .IsMaintenance}}
+      <span class="status status--maintenance">Maintenance</span>
+      <span class="incident__latest">{{with .Latest}}{{.Body}}{{end}}</span>
+      <span class="incident__when">{{when .ScheduledFor}}{{if .ScheduledUntil}} to {{when .ScheduledUntil}}{{end}}</span>
+    {{else}}
+      <span class="status status--{{.Impact}}{{if .Resolved}} status--resolved{{end}}">{{.Impact.Label}}</span>
+      <span class="incident__latest">{{with .Latest}}<b>{{title .Status}}</b> {{.Body}}{{end}}</span>
+      <span class="incident__when">{{if .Resolved}}Resolved {{when .ResolvedAt}}{{else}}Since {{when .StartedAt}}{{end}}</span>
+    {{end}}
+  </div>
+  <div class="incident__body" id="body-{{$a}}" hidden>
+    {{if .Components}}<p class="incident__affects">Affects {{range $i, $c := .Components}}{{if $i}}, {{end}}{{$c}}{{end}}</p>{{end}}
+    {{if .Updates}}
+    <ol class="updates" reversed>
+      {{range newestFirst .Updates}}
+      <li class="update">
+        <span class="update__status">{{title .Status}}</span>
+        <p class="update__body">{{.Body}}</p>
+        <time class="update__time" datetime="{{rfc3339 .At}}">{{when .At}}</time>
+      </li>
+      {{end}}
+    </ol>
+    {{end}}
+  </div>
+</article>
+{{end}}

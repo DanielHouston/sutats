@@ -1,0 +1,136 @@
+# A small real workload set to try sutats against: a "shop" namespace on its
+# own page, with two web deployments probed over their in-cluster Services
+# and one deliberately broken deployment so the page has something to show.
+#
+#   kubectl apply -f examples/demo-cluster.yaml
+#
+# Uses an unprivileged nginx image that runs on OpenShift's restricted SCC.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  labels:
+    sutats.io/page: shop
+  annotations:
+    sutats.io/page-title: "Shop"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  namespace: shop
+  annotations:
+    sutats.io/component: "Storefront"
+    sutats.io/group: "Customer facing"
+    sutats.io/description: "Web shop"
+    sutats.io/order: "10"
+    sutats.io/probe.homepage: http://storefront.shop.svc:8080/
+    sutats.io/probes: |
+      - name: Missing page
+        url: http://storefront.shop.svc:8080/does-not-exist
+        expect_status: 200
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: storefront }
+  template:
+    metadata:
+      labels: { app: storefront }
+    spec:
+      containers:
+        - name: nginx
+          image: docker.io/nginxinc/nginx-unprivileged:1.27-alpine
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storefront
+  namespace: shop
+spec:
+  selector: { app: storefront }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: shop
+  annotations:
+    sutats.io/component: "Checkout"
+    sutats.io/group: "Customer facing"
+    sutats.io/description: "Basket and payment"
+    sutats.io/order: "20"
+    sutats.io/probe: http://checkout.shop.svc:8080/
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: checkout }
+  template:
+    metadata:
+      labels: { app: checkout }
+    spec:
+      containers:
+        - name: nginx
+          image: docker.io/nginxinc/nginx-unprivileged:1.27-alpine
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  selector: { app: checkout }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+# Broken on purpose: the image tag does not exist, so no replica ever
+# becomes ready and the component shows as an outage.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendations
+  namespace: shop
+  annotations:
+    sutats.io/component: "Recommendations"
+    sutats.io/group: "Internal"
+    sutats.io/description: "Product suggestions"
+    sutats.io/order: "30"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: recommendations }
+  template:
+    metadata:
+      labels: { app: recommendations }
+    spec:
+      containers:
+        - name: app
+          image: docker.io/nginxinc/nginx-unprivileged:does-not-exist
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+---
+# Incidents for this namespace show on the shop page.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sutats-incidents
+  namespace: shop
+data:
+  incidents.yaml: |
+    incidents:
+      - title: Recommendations unavailable
+        impact: outage
+        components: [Recommendations]
+        updates:
+          - at: 2026-10-18T09:00:00Z
+            status: investigating
+            body: The recommendations service failed to deploy. Product pages work without it.

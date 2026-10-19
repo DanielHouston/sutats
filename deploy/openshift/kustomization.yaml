@@ -1,0 +1,61 @@
+# OpenShift overlay: the plain manifests plus Routes instead of an Ingress,
+# and the security-context fields the restricted SCC sets for you removed.
+#
+#   oc apply -k deploy/openshift
+#
+# The image is the one named in the base manifest. If its registry is
+# private, create a pull secret once, from a login that can pull it, and
+# add it to the Deployment's imagePullSecrets in a patch below:
+#
+#   oc -n sutats create secret docker-registry registry-credentials \
+#     --docker-server=registry.example.com \
+#     --docker-username=<user> --docker-password=<password>
+#
+# To run a locally built image instead (`make openshift-image` pushes one
+# to the cluster's internal registry), add an images: block mapping the
+# base manifest's image to
+# image-registry.openshift-image-registry.svc:5000/sutats/sutats:dev.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sutats
+resources:
+  - ../base
+  - routes.yaml
+patches:
+  # The restricted SCC assigns UIDs and fsGroup; asking for specific ones
+  # is rejected.
+  - target:
+      kind: Deployment
+      name: sutats
+    patch: |
+      - op: remove
+        path: /spec/template/spec/securityContext/runAsUser
+      - op: remove
+        path: /spec/template/spec/securityContext/fsGroup
+      # "latest" moves with every CI run; always re-pull on rollout.
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+      # Point the host flags at the cluster's apps domain.
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - --title=Status
+          - --host=status.apps-crc.testing
+          - --page-host={slug}-status.apps-crc.testing
+  - target:
+      kind: StatefulSet
+      name: sutats-db
+    patch: |
+      - op: remove
+        path: /spec/template/spec/securityContext
+  # The Ingress is replaced by Routes.
+  - target:
+      kind: Ingress
+      name: sutats
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: sutats

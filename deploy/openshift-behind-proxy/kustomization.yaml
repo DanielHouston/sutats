@@ -1,0 +1,63 @@
+# Use this when the cluster's apps domain is not reachable from where people
+# sit (a CRC VM on a developer machine, a cluster on a private network) and a
+# reverse proxy they can reach forwards a whole subdomain into the cluster
+# router. Here: *.lab.example.com -> cluster router. Replace lab.example.com
+# with your subdomain in the Route host and the args below.
+#
+# One wildcard Route (wildcardPolicy Subdomain) serves the default page and
+# every team page, so new pages need no Route and no proxy change. The
+# router must admit wildcard routes:
+#
+#   oc -n openshift-ingress-operator patch ingresscontroller default \
+#     --type merge -p '{"spec":{"routeAdmission":{"wildcardPolicy":"WildcardsAllowed"}}}'
+#
+# The proxy terminates TLS for visitors and talks plain HTTP to the router,
+# so the Route allows insecure traffic. The proxy needs a wildcard
+# certificate for the subdomain, which means DNS-01 validation. In Caddy:
+#
+#   *.lab.example.com {
+#           tls {
+#                   dns <your DNS provider> <credentials>
+#           }
+#           reverse_proxy <router address>:80
+#   }
+#
+#   oc apply -k deploy/openshift-behind-proxy
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../openshift
+patches:
+  - target:
+      kind: Route
+      name: sutats
+    patch: |
+      - op: replace
+        path: /spec/host
+        value: status.lab.example.com
+      - op: add
+        path: /spec/wildcardPolicy
+        value: Subdomain
+      - op: replace
+        path: /spec/tls/insecureEdgeTerminationPolicy
+        value: Allow
+  # The per-page Route is covered by the wildcard.
+  - target:
+      kind: Route
+      name: sutats-shop
+    patch: |
+      $patch: delete
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: sutats-shop
+  - target:
+      kind: Deployment
+      name: sutats
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - --title=Status
+          - --host=status.lab.example.com
+          - --page-host={slug}.lab.example.com

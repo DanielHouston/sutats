@@ -1,0 +1,100 @@
+# Workloads opt in to the status page with annotations. Only the
+# sutats.io/component annotation is required.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: prod
+  annotations:
+    sutats.io/component: "API"                # display name (required)
+    sutats.io/group: "Edge"                   # heading to list it under
+    sutats.io/description: "Public REST API"  # one line under the name
+    sutats.io/order: "20"                     # lower numbers sort first
+    # HTTP probes. Any of these forms, alone or together.
+    sutats.io/probe.public-api: "https://api.example.com/healthz"
+    sutats.io/probe.internal: "http://api.prod.svc:8080/readyz"
+    sutats.io/probes: |
+      - name: GraphQL
+        url: https://api.example.com/graphql
+        method: POST
+        headers:
+          Content-Type: application/json
+        expect_body: '"data"'
+        degraded_after: 800ms
+    # The discovered checks: a mode (on, off, info, degraded, outage) and
+    # settings. These override the Namespace's and the --check.<name> flags.
+    sutats.io/check.endpoints: "min=2"        # fewer than 2 ready is degraded
+    sutats.io/check.tls: "warn=21d"           # amber three weeks before expiry
+    sutats.io/services: "api"                 # ignore the headless Service
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: api }
+  template:
+    metadata:
+      labels: { app: api }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/example/api:1.2.3
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: prod
+  annotations:
+    sutats.io/component: "PostgreSQL"
+    sutats.io/group: "Data"
+    sutats.io/order: "70"
+    # sutats.io/maintenance: "true"  # force "Under maintenance" (not counted as downtime)
+    # Replicas fail over: one down is not an outage, and a restart now and
+    # then during failover is expected.
+    sutats.io/check.pods: "degraded"
+    sutats.io/check.stability: "tolerate=1 window=1h"
+spec:
+  serviceName: postgres
+  replicas: 3
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  annotations:
+    sutats.io/component: "Ingress"
+    sutats.io/group: "Edge"
+    sutats.io/order: "30"
+spec:
+  selector:
+    matchLabels: { app: ingress-nginx }
+  template:
+    metadata:
+      labels: { app: ingress-nginx }
+    spec:
+      containers:
+        - name: controller
+          image: registry.k8s.io/ingress-nginx/controller:v1.12.0
+---
+# A Namespace can set check defaults for every workload in it. Workloads
+# override them with their own sutats.io/check.<name> annotations.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: batch
+  annotations:
+    sutats.io/check.stability: "info"     # workers restart between jobs
+    sutats.io/check.ingress: "off"        # nothing here is exposed
+    sutats.io/check.tls: "off"
