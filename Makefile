@@ -1,7 +1,7 @@
 IMAGE ?= ghcr.io/danielhouston/sutats
 TAG   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build run mock test lint image push deploy
+.PHONY: build run mock test lint image push deploy release
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(TAG)" -o bin/sutats ./cmd/sutats
@@ -56,3 +56,9 @@ openshift-deploy:
 
 openshift-demo:
 	oc apply -f examples/demo-cluster.yaml
+
+## Publish a release to the public repository: make release VERSION=1.0.1
+## (DRY_RUN=1 to see what would happen). See scripts/release.sh.
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=1.2.3 [DRY_RUN=1]"; exit 1; }
+	scripts/release.sh $(VERSION) $(if $(DRY_RUN),--dry-run)
