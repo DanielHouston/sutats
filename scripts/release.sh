@@ -21,6 +21,11 @@
 #      GitHub release when the gh CLI is logged in
 #   6. tags the released source commit vX.Y.Z on the development remote
 #
+# The release commit and both tags are signed when git has a signing key
+# (git config user.signingkey), so the public host can show them verified.
+# GPG asks for the key's passphrase once; it is checked before anything is
+# pushed.
+#
 # Settings, from the environment:
 #   SOURCE_BRANCH   branch to release                    (master)
 #   DEV_REMOTE      development remote                   (origin)
@@ -29,6 +34,7 @@
 #   FORBID_FILE     private patterns file                (.git/release-forbid)
 #   SKIP_TESTS=1    do not run the tests
 #   NO_GH_RELEASE=1 push the tag but create no GitHub release
+#   SIGN=0          do not sign, even with a signing key configured
 #
 # Tags exist under the same name on both remotes but point at different
 # commits, so the public remote must not fetch tags:
@@ -74,6 +80,23 @@ git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "$tag already exist
 git ls-remote --exit-code --tags "$DEV_REMOTE" "refs/tags/$tag" >/dev/null && die "$tag already exists on $DEV_REMOTE"
 git ls-remote --exit-code --tags "$PUBLIC_REMOTE" "refs/tags/$tag" >/dev/null && die "$tag already exists on $PUBLIC_REMOTE"
 
+# Signing: on whenever a key is configured, unless SIGN=0.
+signkey=$(git config user.signingkey || true)
+sign=false
+[[ -n $signkey && ${SIGN:-} != 0 ]] && sign=true
+gpg=$(git config gpg.program || echo gpg)
+if $sign; then
+	# GPG's passphrase prompt needs to know the terminal.
+	if t=$(tty 2>/dev/null); then export GPG_TTY=$t; fi
+	if $dry; then
+		say "would sign with $signkey"
+	else
+		say "checking the signing key $signkey"
+		echo "release check" | "$gpg" --local-user "$signkey" --sign >/dev/null ||
+			die "cannot sign with $signkey; unlock it first: echo test | gpg --local-user '$signkey' --clearsign"
+	fi
+fi
+
 prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$src" 2>/dev/null || true)
 if [[ -n $prev ]]; then
 	highest=$(printf '%s\n%s\n' "${prev#v}" "$version" | sort -V | tail -1)
@@ -118,15 +141,27 @@ if [[ -n $parent && $(git rev-parse "$parent^{tree}") == "$tree" ]]; then
 	commit=$parent
 	say "$PUBLIC_REMOTE/$PUBLIC_BRANCH already has this tree; tagging it as it is"
 else
-	commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} -m "$message")
+	signflag=()
+	if $sign && ! $dry; then signflag=(-S); fi
+	commit=$(git commit-tree "${signflag[@]}" "$tree" ${parent:+-p "$parent"} -m "$message")
 	if [[ -n $parent ]]; then
 		say "release commit ${commit:0:7}, on top of ${parent:0:7}"
 	else
 		say "release commit ${commit:0:7}, starting the public history"
 	fi
 fi
-tagobj=$(printf 'object %s\ntype commit\ntag %s\ntagger %s\n\n%s\n' \
-	"$commit" "$tag" "$(git var GIT_COMMITTER_IDENT)" "$message" | git mktag)
+# The tag object is built by hand because it must not exist as a local tag
+# (the source commit gets that name). A signed tag is the tag text followed
+# by a detached signature of it, which is what git tag -s writes.
+tagfile=$(mktemp)
+trap 'rm -f "$tagfile" "$tagfile.sig"' EXIT
+printf 'object %s\ntype commit\ntag %s\ntagger %s\n\n%s\n' \
+	"$commit" "$tag" "$(git var GIT_COMMITTER_IDENT)" "$message" >"$tagfile"
+if $sign && ! $dry; then
+	"$gpg" --local-user "$signkey" --armor --detach-sign --output "$tagfile.sig" "$tagfile"
+	cat "$tagfile.sig" >>"$tagfile"
+fi
+tagobj=$(git mktag <"$tagfile")
 
 echo
 echo "$message"
@@ -143,7 +178,8 @@ else
 fi
 
 # ---- 6. mark the source commit ----
-run git tag -a "$tag" "$src" -m "Release $tag"
+if $sign; then tagflag=-s; else tagflag=-a; fi
+run git tag "$tagflag" "$tag" "$src" -m "Release $tag"
 run git push "$DEV_REMOTE" "refs/tags/$tag"
 
 if $dry; then say "dry run: nothing was pushed"; else say "released $tag"; fi
