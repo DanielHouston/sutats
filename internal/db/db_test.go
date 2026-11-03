@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +63,10 @@ func TestRecordAndLoadDays(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Dated yesterday: refresh the day aggregate, as in the test below.
+	if err := d.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	store := history.New()
 	if err := d.LoadDays(ctx, store, 90, time.Now()); err != nil {
@@ -91,6 +97,36 @@ func TestRecordAndLoadDays(t *testing.T) {
 	}
 }
 
+func TestGapAcrossMidnightIsSplit(t *testing.T) {
+	d := open(t)
+	ctx := context.Background()
+	// Yesterday's midnight, so both days are in the past and settled.
+	midnight := time.Now().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour)
+	up := model.Component{ID: "deployment/ns/m", Status: model.StatusOperational}
+	down := model.Component{ID: "deployment/ns/m", Status: model.StatusOutage}
+	if err := d.Record(ctx, midnight.Add(-20*time.Second), []model.Component{up}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Record(ctx, midnight.Add(10*time.Second), []model.Component{down}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store := history.New()
+	if err := d.LoadDays(ctx, store, 90, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	days := store.Days("deployment/ns/m", 3, time.Now())
+	// 20 s before midnight in the day before's bucket, 10 s after it in its own.
+	if day := days[0]; day.Observed != 20 || day.Downtime != 20 || day.Status != model.StatusOutage {
+		t.Fatalf("day before = %+v", day)
+	}
+	if day := days[1]; day.Observed != 10 || day.Downtime != 10 || day.Status != model.StatusOutage {
+		t.Fatalf("day after = %+v", day)
+	}
+}
+
 func TestZeroLengthObservationDoesNotColourDay(t *testing.T) {
 	d := open(t)
 	ctx := context.Background()
@@ -102,6 +138,12 @@ func TestZeroLengthObservationDoesNotColourDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := d.Record(ctx, base.Add(15*time.Second), []model.Component{up}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// The samples are dated yesterday. The test database outlives runs, and
+	// an earlier run may have materialised the day aggregate past them, so
+	// refresh it (as seeding does) rather than rely on real-time rows.
+	if err := d.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
 	store := history.New()
@@ -237,5 +279,42 @@ func TestLeaderLockIsExclusive(t *testing.T) {
 	case <-got:
 	case <-ctx2.Done():
 		t.Fatal("second process never took over the lock")
+	}
+}
+
+// A database that cannot be reached yet is retried until StartupWait runs
+// out, so sutats can start alongside it. Needs no database.
+func TestOpenWaitsForAnUnreachableDatabase(t *testing.T) {
+	old := StartupWait
+	StartupWait = 2 * time.Second
+	defer func() { StartupWait = old }()
+	start := time.Now()
+	_, err := Open(context.Background(), "postgres://u:p@127.0.0.1:1/x?sslmode=disable")
+	took := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "pinging database") {
+		t.Fatalf("err = %v", err)
+	}
+	if took < time.Second || took > 10*time.Second {
+		t.Errorf("gave up after %v, want about the 2 s wait", took)
+	}
+}
+
+// An error from the server itself will not fix itself: no waiting.
+func TestOpenFailsFastOnAWrongPassword(t *testing.T) {
+	raw := os.Getenv("SUTATS_TEST_DATABASE_URL")
+	if raw == "" {
+		t.Skip("SUTATS_TEST_DATABASE_URL not set")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(u.User.Username(), "definitely-wrong")
+	start := time.Now()
+	if _, err := Open(context.Background(), u.String()); err == nil {
+		t.Fatal("a wrong password should fail")
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("took %v; a wrong password should not be retried", took)
 	}
 }

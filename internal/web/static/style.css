@@ -3,9 +3,9 @@
    nowhere else; text carries state through weight, not colour. No cards,
    no borders except hairline row dividers, no rounded corners.
 
-   Every bar on the page sits in the same column of a three-column ledger
-   (label | bar | number), so a bad day lines up vertically everywhere and
-   one legend serves the whole page. */
+   Every bar on the page sits in the same column of a four-column ledger
+   (label | bar | now | number), so a bad day lines up vertically everywhere
+   and one legend serves the whole page. */
 
 /* IBM Plex (SIL Open Font License, see fonts/LICENSE.txt), served from the
    binary so the page works without internet access. Latin subset only; the
@@ -49,19 +49,26 @@
   --out: #c9332b;
   --none: #e4e7e5;
 
+  --band: #f4f5f4;
+  --band-line: #dcdfdd;
+  --band-none: #dcdfdd;
+
   --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --measure: 76rem;
   --label-col: 15rem;
+  --now-col: 9rem;
   --num-col: 4rem;
   --col-gap: 1.25rem;
 
-  /* Vertical rhythm. Every gap on the page is one of these three. Blocks
+  /* Vertical rhythm. Every gap on the page is one of these five. Blocks
      use top margins only, so adjacent blocks never add their gaps up. */
-  --gap-block: 2.5rem;  /* between hero, incidents, each group, maintenance, past */
-  --gap-row: 0.75rem;   /* above and below a component row or incident line */
-  --gap-sub: 0.25rem;   /* above and below a signal row */
+  --gap-group: 4rem;        /* between groups of components, and around them */
+  --gap-block: 2.5rem;      /* between hero, incidents, maintenance, past */
+  --gap-component: 1.1rem;  /* above and below a component row */
+  --gap-row: 0.75rem;       /* above and below an incident line or header row */
+  --gap-sub: 0.25rem;       /* above and below a signal row */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -73,6 +80,9 @@
     --line: #262a28;
     --line-strong: #3a403d;
     --none: #262a28;
+    --band: #191c1a;
+    --band-line: #2c302e;
+    --band-none: #2c302e;
   }
 }
 
@@ -129,30 +139,62 @@ code { font-family: var(--mono); font-size: 0.9em; background: var(--line); padd
 
 main { padding-bottom: var(--gap-block); }
 
-.hero { margin: var(--gap-block) 0 1.5rem; }
+/* The page alternates: the summary (headline, problems, whole system, open
+   incidents) on a faint band running the full width of the window, the
+   components on the paper, then the history on a band again. A band is a
+   shadow clipped to the sides, which keeps its contents on the page's own
+   column; its padding takes the place of its first block's gap. */
+.band {
+  --line: var(--band-line);
+  --none: var(--band-none); /* empty days, a little darker so they still show */
+  margin-top: var(--gap-block);
+  padding: var(--gap-block) 0;
+  background: var(--band);
+  box-shadow: 0 0 0 100vmax var(--band);
+  clip-path: inset(0 -100vmax);
+}
+.band > .section:first-child { margin-top: 0; }
+.section--components + .band { margin-top: var(--gap-group); }
+.summary { margin-top: 1.5rem; padding-top: calc(var(--gap-block) * 1.6); }
+
+/* The headline is the largest thing on the page by far: the one sentence a
+   visitor came for. Size and air do the work; no colour, no device. */
+.hero { margin: 0 0 var(--gap-block); }
 .hero__title {
   margin: 0;
   font-weight: 600;
-  font-size: clamp(1.6rem, 3.2vw, 2.1rem);
-  line-height: 1.2;
-  letter-spacing: -0.02em;
+  font-size: clamp(2.25rem, 5.6vw, 4.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
 }
-.hero__meta { margin: 0.35rem 0 0; color: var(--muted); }
+.hero__meta { margin: 1rem 0 0; font-size: 1.15rem; color: var(--muted); }
 
-.problems { list-style: none; margin: 0.6rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
-.problem { display: flex; flex-wrap: wrap; gap: 0 0.6rem; align-items: baseline; }
-.problem a { font-weight: 600; text-decoration: none; }
-.problem a:hover { text-decoration: underline; }
-.problem__status { font-weight: 600; }
+/* What is wrong, under an ink rule, one line each. The name sits in the
+   ledger's label column and the state in the bar column, so the list lines
+   up with the rows below it. */
+.problems { list-style: none; margin: 1.75rem 0 0; padding: 0; border-top: 1px solid var(--ink); }
+.problem {
+  display: grid;
+  grid-template-columns: var(--label-col) minmax(0, 1fr);
+  column-gap: var(--col-gap);
+  align-items: baseline;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 1.05rem;
+}
+.problem > a { font-weight: 600; text-decoration: none; }
+.problem > a:hover { text-decoration: underline; }
+.problem__status { font-weight: 600; margin-right: 0.6rem; }
 .problem__reason { color: var(--muted); }
 
-/* ---------- the ledger: label | bar | number ---------- */
+/* ---------- the ledger: label | bar | now | number ---------- */
 
 .ledger { margin: 0; }
 .row {
   display: grid;
-  grid-template-columns: var(--label-col) minmax(0, 1fr) var(--num-col);
-  grid-template-areas: "label bar num";
+  grid-template-columns: var(--label-col) minmax(0, 1fr) var(--now-col) var(--num-col);
+  grid-template-areas: "label bar now num";
   column-gap: var(--col-gap);
   align-items: start;
 }
@@ -174,25 +216,35 @@ main { padding-bottom: var(--gap-block); }
 .row--system .row__name { font-weight: 500; }
 .row--system .row__num { padding-top: 0.35rem; }
 
-/* Legend, once, above the system bar */
-.legend {
-  display: flex; justify-content: space-between;
-  margin-bottom: 0.3rem;
+/* Axis, once, above the system bar: one empty slot per day, laid out like
+   a bar so every label sits exactly over its marker. Labels overflow their
+   slot to the right; Today is right-aligned in the last one. */
+.axis {
+  display: flex; gap: 2px;
+  height: 1.2em;
+  margin-bottom: 0.4rem;
   font-family: var(--mono);
   font-size: 0.72rem;
+  line-height: 1.2;
   color: var(--muted);
 }
+.axis__slot { flex: 1 1 0; min-width: 0; position: relative; }
+.axis__label { position: absolute; top: 0; left: 0; white-space: nowrap; }
+/* A hairline at the left edge of a month's name marks the day it starts. */
+.axis__slot--mark .axis__label { border-left: 1px solid var(--line-strong); padding-left: 3px; }
+.axis__slot--end .axis__label { left: auto; right: 0; }
 
 /* Group header row: one line (name · count · state) over a rule. Collapsed,
    the same row carries one combined bar standing in for its members. */
 .row--group {
-  margin-top: var(--gap-block);
+  margin-top: var(--gap-group);
   padding-bottom: 0.35rem;
   border-bottom: 1px solid var(--ink);
 }
+/* The count and state follow the name, or go under it when the line is
+   too short for both; neither is ever cut. */
 .row--group .row__label {
-  display: flex; flex-wrap: nowrap; align-items: baseline; gap: 0 0.6rem;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.6rem;
 }
 /* An open group shows no bar, so its header may use that column too. */
 .row--group:has(.row__toggle[aria-expanded="true"]) .row__label { grid-column: 1 / 3; }
@@ -206,8 +258,9 @@ main { padding-bottom: var(--gap-block); }
 .group__name .row__toggle { letter-spacing: inherit; text-transform: inherit; }
 .group__meta { font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
 /* The summary bar stands in for the members only while they are hidden. */
-.row--group .row__bar, .row--group .row__num { visibility: hidden; }
+.row--group .row__bar, .row--group .row__now, .row--group .row__num { visibility: hidden; }
 .row--group:has(.row__toggle[aria-expanded="false"]) .row__bar,
+.row--group:has(.row__toggle[aria-expanded="false"]) .row__now,
 .row--group:has(.row__toggle[aria-expanded="false"]) .row__num { visibility: visible; }
 .row--group .bar { height: 14px; margin-top: 2px; }
 .row--group .row__num { padding-top: 1px; }
@@ -218,15 +271,13 @@ main { padding-bottom: var(--gap-block); }
 
 /* Component row */
 .row--component {
-  padding: var(--gap-row) 0;
+  padding: var(--gap-component) 0;
   border-top: 1px solid var(--line);
 }
 .row--group + .row--component { border-top: 0; }
 .row--component .bar { height: 20px; margin-top: 2px; }
 .row--component .row__num { padding-top: 3px; }
 .row__name { font-size: 0.95rem; font-weight: 600; line-height: 1.5; }
-.row__status { font-size: 0.82rem; margin-top: 0.1rem; display: flex; flex-wrap: wrap; gap: 0 0.5rem; }
-.row__reason { color: var(--muted); }
 .row__desc { font-size: 0.8rem; color: var(--muted); margin-top: 0.1rem; }
 
 /* Disclosure control on the name: the name itself is the button. */
@@ -248,7 +299,7 @@ main { padding-bottom: var(--gap-block); }
 
 /* Signal rows, indented under their component. The block ends so that the
    distance from the last thin bar to the next rule equals a row gap. */
-.subs { padding-bottom: calc(var(--gap-row) - var(--gap-sub)); }
+.subs { padding-bottom: calc(var(--gap-component) - var(--gap-sub)); }
 .subs[hidden] { display: none; }
 /* Section heading inside a component's detail: the name, then a hairline
    across the bar and number columns, so each section reads as one block.
@@ -289,41 +340,120 @@ main { padding-bottom: var(--gap-block); }
 
 /* ---------- the bar ---------- */
 
+/* A bar is history: each cell the worst status of its day. What a row is
+   right now is in the Now column after it. */
 .bar {
   display: flex;
   gap: 2px;
   height: 20px;
 }
 .bar__day {
+  --c: var(--none);
   flex: 1 1 0;
   min-width: 0;
-  background: var(--none);
+  background: var(--c);
 }
-/* Today is wider so the current state reads from the bar itself. */
-.bar__day:last-child { flex-grow: 3; }
-.bar__day--operational { background: var(--ok); }
-.bar__day--maintenance { background: var(--maint); }
-.bar__day--degraded { background: var(--deg); }
-.bar__day--outage { background: var(--out); }
+.bar__day--operational { --c: var(--ok); }
+.bar__day--maintenance { --c: var(--maint); }
+.bar__day--degraded { --c: var(--deg); }
+.bar__day--outage { --c: var(--out); }
+/* Today is still running: outlined to full height, filled as far as the
+   day has gone (--fill, set by the server). */
+.bar__day--today {
+  background: linear-gradient(to top, var(--c) var(--fill, 100%), transparent var(--fill, 100%));
+  box-shadow: inset 0 0 0 1px var(--c);
+}
 .bar__day:hover { outline: 1px solid var(--ink); outline-offset: 1px; }
+/* The hovered day's date, just above the bar under the pointer (app.js). */
+.daytip {
+  position: absolute; z-index: 5; pointer-events: none;
+  padding: 0.05rem 0.35rem; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line-strong); /* a label of its own over rules and bars */
+  font-family: var(--mono); font-size: 0.72rem; line-height: 1.5; white-space: nowrap;
+}
+.daytip[hidden] { display: none; }
+/* The hovered day, outlined lightly in every other bar (see app.js). */
+.bar__day--column { outline: 1px solid var(--faint); outline-offset: 1px; }
 
 /* Clickable cells are buttons; strip the button chrome. */
 button.bar__day { padding: 0; border: 0; cursor: pointer; font: inherit; color: inherit; }
 button.bar__day:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; z-index: 1; }
 .bar__day--selected { outline: 2px solid var(--ink); outline-offset: 1px; z-index: 1; }
 
-/* Day breakdown, opened by clicking a cell. Lives in the bar column. */
-.daypanel { margin: var(--gap-row) 0 0; padding: var(--gap-row) 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.daypanel__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1rem; margin-bottom: 0.5rem; font-size: 0.85rem; }
-.daypanel__date { font-weight: 600; }
-.daypanel__summary { color: var(--muted); }
-.daypanel__summary b { color: var(--ink); font-weight: 600; }
-.daypanel__close { margin-left: auto; padding: 0; border: 0; background: none; font: inherit; font-size: 0.8rem; color: var(--muted); cursor: pointer; text-decoration: underline; }
-.daypanel__close:hover { color: var(--ink); }
-.daypanel .bar { height: 18px; margin-top: 0; }
-.daypanel .bar .bar__day:last-child { flex-grow: 1; }
-.daypanel .legend { margin: 0.3rem 0 0; }
-.daypanel__latency { margin: 0.4rem 0 0; font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
+/* The overview's title row above the 90-day axis: the dates on the left,
+   then a muted summary. */
+.row--period { padding-bottom: var(--gap-row); align-items: baseline; }
+.row--period .row__bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1rem; font-size: 0.85rem; }
+.period__dates { font-weight: 600; font-size: 0.85rem; }
+.period__summary { color: var(--muted); }
+.period__summary b { color: var(--ink); font-weight: 600; }
+
+/* Day view (app.js): a component's section and the section for one day
+   share a frame the width of the column. Clicking a day slides one out and
+   the other in; the frame hides whatever leaves it, with a little room for
+   the outline around an edge cell. */
+.slide { display: grid; overflow: clip; overflow-clip-margin: 4px; }
+.slide__pane { grid-area: 1 / 1; min-width: 0; align-self: start; } /* its own height, for the slide */
+.slide__pane[hidden] { display: none; }
+/* The day's section is a copy of the 90-day one, so its rows keep their
+   heights: the date sits by the name without growing the line, the buttons
+   take the status line's place and spacing, and the hour axis tucks under
+   the component's own bar. */
+.dayview__date { margin-left: 0.6rem; font-size: 0.82rem; font-weight: 400; color: var(--muted); }
+/* In the day's section the Now column holds the way back over the
+   neighbouring days. */
+.dayview__actions { align-items: flex-start; white-space: nowrap; }
+.dayview__steps { display: flex; gap: 0.6rem; }
+.dayview__steps .dayview__nav { font-family: var(--mono); font-size: 0.72rem; }
+/* The hours take no height of their own (the negative margin gives back
+   their gap and line), so the row is exactly as tall as on the 90 days. */
+.row--component .row__bar .axis { margin: 0.35rem 0 calc(-1.2em - 0.35rem); }
+.dayview__nav { padding: 0; border: 0; background: none; font: inherit; font-size: 0.8rem; color: var(--muted); cursor: pointer; text-decoration: underline; }
+.dayview__nav:hover { color: var(--ink); }
+.dayview__nav:disabled { cursor: default; text-decoration: none; opacity: 0.5; }
+/* The way back is the main action: ink, a little heavier, underlined only
+   on hover like the other names on the page. */
+.dayview__back { color: var(--ink); font-weight: 500; text-decoration: none; }
+.dayview__back:hover { text-decoration: underline; }
+.row--dayaxis { padding-bottom: var(--gap-row); }
+.row--dayaxis .axis { margin: 0.1rem 0 0; }
+
+/* ---------- the Now column ---------- */
+
+/* What each row is right now, set apart from its history by a hairline: a
+   mark and a word, then a line saying why. The mark's shape says the state
+   as well as its colour, for anyone who cannot tell the colours apart. */
+.row__now {
+  grid-area: now;
+  min-width: 0;
+  align-self: stretch;
+  display: flex; flex-direction: column;
+  padding-left: 0.875rem;
+  border-left: 1px solid var(--line-strong);
+}
+.now__state {
+  display: flex; align-items: center; gap: 0.45rem;
+  font-size: 0.82rem; font-weight: 600; line-height: 1.5;
+  white-space: nowrap;
+}
+.now__text {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.now__mark { flex: none; width: 7px; height: 7px; background: var(--none); }
+.now__mark--operational { background: var(--ok); border-radius: 50%; }
+.now__mark--maintenance { background: var(--maint); transform: rotate(45deg) scale(0.85); }
+.now__mark--degraded { width: 9px; height: 8px; background: var(--deg); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.now__mark--outage { background: var(--out); }
+.now__mark--unknown { border-radius: 50%; }
+/* The header: when the column was last true. */
+.row--period .now__state { font-family: var(--mono); font-weight: 400; font-size: 0.78rem; }
+.row--period .row__num { font-size: 0.72rem; }
+/* A check: one quiet line, like its label; bold when it is failing. */
+.row--sub .now__state { font-family: var(--mono); font-size: 0.74rem; font-weight: 400; color: var(--muted); line-height: 1.5; }
+.row--sub .row__now--bad .now__state { color: var(--ink); font-weight: 600; }
+/* In a past day's section the column keeps its rule but says nothing. */
+.row__now--past > * { visibility: hidden; }
 
 /* ---------- sections ---------- */
 
@@ -381,24 +511,87 @@ button.bar__day:focus-visible { outline: 2px solid var(--ink); outline-offset: 1
 .empty__hint { margin-top: 0.5rem !important; color: var(--muted); font-size: 0.9rem; }
 
 .foot { padding-bottom: var(--gap-block); color: var(--muted); font-size: 0.8rem; }
+.foot__version { font-family: var(--mono); font-size: 0.72rem; color: var(--faint); }
 
-/* ---------- narrow screens: label and number on one line, bar below ---------- */
+/* ---------- touch ---------- */
 
-@media (max-width: 760px) {
+/* A cell's tap area reaches a little above and below it, without changing
+   how it looks, so the thin bars of the checks can be hit. */
+@media (pointer: coarse) {
+  button.bar__day { position: relative; }
+  button.bar__day::after { content: ""; position: absolute; inset: -6px -1px; }
+}
+
+/* ---------- narrower screens: rows stack, bars take the full width ----------
+
+   Under 1080px the four columns would leave the bars only a few pixels a
+   day, so each row stacks: what it is and what it is now on the first
+   line, its history and uptime on the second, the bar as wide as the page
+   allows. The uptime sits on the bar's line, centred on it. */
+
+@media (max-width: 1079px) {
   :root { --col-gap: 0.75rem; }
+  /* The label column is gone: a problem's state follows its name, and goes
+     under it only when the line is too short. */
+  .problem { display: flex; flex-wrap: wrap; gap: 0 0.6rem; font-size: 1rem; }
   .row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto var(--num-col);
     grid-template-areas:
-      "label num"
-      "bar   bar";
+      "label now now"
+      "bar   bar num";
     row-gap: 0.35rem;
   }
-  .row--legend { grid-template-areas: "bar bar"; }
-  .row--legend .row__label, .row--legend .row__num { display: none; }
-  .row--component .bar, .row--system .bar { margin-top: 0; }
-  .row--component .row__num, .row--system .row__num { padding-top: 0.2rem; }
+  .row .bar { margin-top: 0; }
+  .row__now, .dayview__actions {
+    align-self: start; align-items: flex-end; text-align: right;
+    max-width: 11rem; padding-left: 0; border-left: 0;
+  }
+  .row .row__num { padding-top: 0; }
+  .row--system .row__num { line-height: 28px; }
+  .row--group .row__num { line-height: 14px; }
+  .row--component .row__num { line-height: 20px; }
+  .row--sub .row__num { line-height: 8px; }
   .row--sub .row__label, .row--subtitle .row__label { padding-left: 0.75rem; }
-  .row--sub .bar { margin-top: 0; }
+
+  /* The title row: the dates and when Now was taken, the summary under. */
+  .row--period { grid-template-areas: "label now now" "bar bar bar"; }
+  .row--period .row__num { display: none; }
+
+  /* The axis moves under the whole-system bar, where it reads as the
+     scale of every bar below. */
+  .ledger--system { display: flex; flex-direction: column; }
+  .row--legend { order: 1; grid-template-areas: "bar bar ."; }
+  .row--legend .row__label, .row--legend .row__now, .row--legend .row__num { display: none; }
+  .row--legend .axis { margin: 0.4rem 0 0; }
+
+  /* An open group is its heading alone. */
+  .row--group:has(.row__toggle[aria-expanded="true"]) { grid-template-areas: "label label label"; }
+  .row--group:has(.row__toggle[aria-expanded="true"]) :is(.row__bar, .row__now, .row__num) { display: none; }
+
+  /* A day's section: the date takes the description's line, and the hours
+     get a line of their own under the day's bar (the frame eases to the
+     new height, see app.js). */
+  .slide__pane--day .row__desc { display: none; }
+  .slide__pane--day .dayview__date { display: block; margin-left: 0; font-size: 0.8rem; }
+  .row--component .row__bar .axis { margin: 0.35rem 0 0; }
+}
+
+/* ---------- phones: the last 30 days ----------
+
+   Ninety days on a phone would make each day a sliver. Thirty keep a day
+   wide enough to see and to tap, and the uptime, the dates and the axis
+   switch to the same 30 days, so the numbers always describe the cells
+   shown. A day opened here is shown in hours (app.js). */
+
+.days-30 { display: none; }
+@media (max-width: 639px) {
+  :root { --num-col: 3.5rem; --gap-group: 3rem; }
+  .masthead, main, .foot { padding-left: 1rem; padding-right: 1rem; }
   .masthead { flex-wrap: wrap; }
+  .days-90 { display: none; }
+  div.days-30 { display: block; }
+  span.days-30 { display: inline; }
+  .bar:not(.bar--day) > .bar__day:nth-last-child(n+31) { display: none; }
+  .row__now, .dayview__actions { max-width: 9rem; }
   .update { grid-template-columns: 1fr; }
 }

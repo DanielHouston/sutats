@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -34,8 +35,47 @@ func TestRecordAndUptime(t *testing.T) {
 	if days[0].Status != model.StatusOutage {
 		t.Fatalf("day status = %v", days[0].Status)
 	}
-	if u := Uptime(days); u < 0.79 || u > 0.81 {
-		t.Fatalf("uptime = %v", u)
+	// 30 s down out of 150 s observed is exactly 80%.
+	if u := Uptime(days); math.Abs(u-0.8) > 1e-12 {
+		t.Fatalf("uptime = %v, want 0.8", u)
+	}
+}
+
+func TestMaintenanceIsNotDowntime(t *testing.T) {
+	s := New()
+	base := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+	for i, st := range []model.Status{model.StatusOperational, model.StatusMaintenance, model.StatusMaintenance, model.StatusOperational} {
+		s.Record(base.Add(time.Duration(i)*time.Minute), []model.Component{{Name: "A", Status: st}}, time.Minute)
+	}
+	d := s.Days("A", 1, base)[0]
+	if d.Observed != 180 || d.Downtime != 0 || d.Status != model.StatusMaintenance {
+		t.Fatalf("day = %+v, want 180 s observed, no downtime, maintenance", d)
+	}
+	if u := Uptime([]model.Day{d}); u != 1 {
+		t.Fatalf("uptime = %v, want 1", u)
+	}
+}
+
+func TestGapAcrossMidnightIsSplit(t *testing.T) {
+	s := New()
+	before := time.Date(2026, 10, 15, 23, 59, 40, 0, time.UTC)
+	after := time.Date(2026, 10, 16, 0, 0, 10, 0, time.UTC)
+	s.Record(before, []model.Component{{Name: "A", Status: model.StatusOperational}}, time.Minute)
+	s.Record(after, []model.Component{{Name: "A", Status: model.StatusOutage}}, time.Minute)
+	days := s.Days("A", 2, after)
+	// 20 s to midnight on the 15th, 10 s after it on the 16th.
+	if d := days[0]; d.Date != "2026-10-15" || d.Observed != 20 || d.Downtime != 20 || d.Status != model.StatusOutage {
+		t.Fatalf("15th = %+v", d)
+	}
+	if d := days[1]; d.Date != "2026-10-16" || d.Observed != 10 || d.Downtime != 10 || d.Status != model.StatusOutage {
+		t.Fatalf("16th = %+v", d)
+	}
+	// A sample exactly at midnight puts the whole gap in the day before.
+	s.Record(time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC).Add(-30*time.Second), []model.Component{{Name: "B", Status: model.StatusOperational}}, time.Minute)
+	s.Record(time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC), []model.Component{{Name: "B", Status: model.StatusOperational}}, time.Minute)
+	days = s.Days("B", 2, time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC))
+	if days[0].Observed != 30 || days[1].Observed != 0 {
+		t.Fatalf("at midnight: %+v", days)
 	}
 }
 

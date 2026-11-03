@@ -1,0 +1,62 @@
+# A public demo of sutats: invented components, incidents and 90 days of
+# history, with no Kubernetes cluster. See README.md in this directory.
+#
+# Ready for Coolify and other platforms that route by domain through their
+# own proxy: the app is exposed on port 8080 to the proxy, not published on
+# the host. To run it on your own machine, add the local override:
+#
+#   docker compose -f deploy/demo/compose.yaml -f deploy/demo/compose.local.yaml up -d
+name: sutats-demo
+
+services:
+  sutats:
+    image: ${SUTATS_IMAGE:-ghcr.io/danielhouston/sutats:1}
+    command:
+      - --mock
+      - --title=${DEMO_TITLE:-Acme}
+      - --listen=:8080
+      # Optional: serve the mock's team pages on their own hosts. Needs a
+      # wildcard DNS record, such as *.status-demo.example.com.
+      - --host=${DEMO_HOST:-}
+      - --page-host=${DEMO_PAGE_HOST:-}
+    environment:
+      # With a database the mock seeds 90 days of samples on first start,
+      # and bar cells open a day-by-day breakdown.
+      DATABASE_URL: postgres://sutats:${POSTGRES_PASSWORD:-sutats-demo}@db:5432/sutats?sslmode=disable
+    # Reached through the platform's proxy. In Coolify, give this service
+    # a domain ending in :8080, such as https://status-demo.example.com:8080.
+    expose:
+      - "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    # The image has no shell, so health is checked by the host or proxy:
+    # GET /healthz (process up) and GET /readyz (ready to serve).
+
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: sutats
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sutats-demo}
+      POSTGRES_DB: sutats
+      # The image sizes Postgres to the host's memory at first start; size
+      # it for a small demo instead. Applies when the volume is created.
+      TS_TUNE_MEMORY: ${DB_MEMORY:-512MB}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP on purpose: on first start the image runs a setup server on
+      # the local socket only, then restarts. A socket check would report
+      # ready too early and sutats would connect during the restart.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U sutats -d sutats"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  db:

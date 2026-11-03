@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/DanielHouston/sutats/internal/history"
@@ -45,13 +46,50 @@ func Open(ctx context.Context, url string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
+	if err := waitForDatabase(ctx, pool, StartupWait); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("pinging database: %w", err)
+		return nil, err
 	}
 	return &DB{pool: pool, lastSeen: map[string]time.Time{}}, nil
+}
+
+// StartupWait is how long Open keeps trying a database that cannot be
+// reached yet. Databases often start alongside sutats (Compose, a Pod's
+// sibling container) and refuse connections for a while: Postgres images
+// restart the server once after first-time setup.
+var StartupWait = 2 * time.Minute
+
+// waitForDatabase pings until the database answers. Connection failures
+// are retried with growing pauses until wait runs out; an error from the
+// server itself, such as a wrong password or a missing database, will not
+// fix itself and fails at once.
+func waitForDatabase(ctx context.Context, pool *pgxpool.Pool, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	pause := 500 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := pool.Ping(pingCtx)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("database is reachable", "attempts", attempt)
+			}
+			return nil
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) || ctx.Err() != nil || time.Now().Add(pause).After(deadline) {
+			return fmt.Errorf("pinging database: %w", err)
+		}
+		if attempt == 1 {
+			slog.Info("waiting for the database", "err", err, "for_up_to", wait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pause):
+		}
+		pause = min(pause*2, 5*time.Second)
+	}
 }
 
 // Close releases the pool.
@@ -204,18 +242,15 @@ func (d *DB) Record(ctx context.Context, now time.Time, comps []model.Component,
 	}
 	values := make([][]any, 0, len(rows))
 	for _, r := range rows {
-		elapsed := 0.0
-		if last, ok := d.lastSeen[r.key]; ok {
-			g := now.Sub(last)
-			if g > maxGap {
-				g = maxGap
-			}
-			if g > 0 {
-				elapsed = g.Seconds()
-			}
-		}
+		last, ok := d.lastSeen[r.key]
+		before, after := history.SplitGap(now, history.Gap(now, last, ok, maxGap))
 		d.lastSeen[r.key] = now
-		values = append(values, []any{now, r.key, int16(r.status), float32(elapsed), r.latency})
+		// The part of the gap before midnight goes in the day before's
+		// bucket, stamped just ahead of midnight.
+		if before > 0 {
+			values = append(values, []any{now.Add(-after - time.Microsecond), r.key, int16(r.status), float32(before.Seconds()), nil})
+		}
+		values = append(values, []any{now, r.key, int16(r.status), float32(after.Seconds()), r.latency})
 	}
 	for k := range d.lastSeen {
 		if !seen[k] {

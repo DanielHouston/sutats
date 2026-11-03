@@ -1,0 +1,9 @@
+# Publishes the demo on this machine, for running it without a proxy:
+#
+#   docker compose -f deploy/demo/compose.yaml -f deploy/demo/compose.local.yaml up -d
+#
+# Then open http://localhost:8080 (or the PORT you set).
+services:
+  sutats:
+    ports:
+      - "${PORT:-8080}:8080"

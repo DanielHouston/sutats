@@ -361,8 +361,11 @@ func main() {
 				cancel()
 				prober.Attach(comps)
 				n := time.Now()
-				status.ApplyIncidents(comps, incs.Incidents(), source.Pages(), n)
-				record(sctx, n, comps)
+				pages := source.Pages()
+				status.ApplyIncidents(comps, incs.Incidents(), pages, n)
+				// The combined rows are recorded too, so their downtime is
+				// the real time anything in them was wrong.
+				record(sctx, n, append(status.Rollups(comps, pages), comps...))
 				saveLive(sctx)
 				if tsdb == nil {
 					refresh()
@@ -499,6 +502,7 @@ func main() {
 		slog.Error("starting web server", "err", err)
 		os.Exit(1)
 	}
+	srv.Version = version
 	if tsdb != nil {
 		srv.Series = func(c context.Context, key string, from, to time.Time, bucket time.Duration) (any, error) {
 			return tsdb.Series(c, key, from, to, bucket)

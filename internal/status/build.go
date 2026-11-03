@@ -217,7 +217,7 @@ func Build(in Input) model.Snapshot {
 	}
 	for gi := range snap.Groups {
 		g := &snap.Groups[gi]
-		g.History, g.Uptime = combinedHistory(g.Components, now)
+		g.History, g.Uptime = combinedHistory(g.Components, in.History, GroupKey(in.Page, g.Name), now)
 		g.Collapsed = g.Name != "" && !g.Attention && g.Status == model.StatusOperational && len(comps) > CollapseGroupsAbove
 	}
 
@@ -254,7 +254,7 @@ func Build(in Input) model.Snapshot {
 
 	snap.Status = overall
 	snap.Headline = headline(overall, outages, len(comps), in.Connected)
-	snap.History, snap.Uptime = combinedHistory(comps, now)
+	snap.History, snap.Uptime = combinedHistory(comps, in.History, SystemKey(in.Page), now)
 	return snap
 }
 
@@ -281,11 +281,14 @@ func attachHistory(c *model.Component, store *history.Store, now time.Time) {
 	}
 }
 
-// combinedHistory folds a set of components' days into one row: each day
-// takes the worst status seen and the longest downtime of any component.
-// Downtime across components overlaps in practice, so the longest single
-// downtime is the closest cheap estimate of "time something was wrong".
-func combinedHistory(comps []model.Component, now time.Time) ([]model.Day, float64) {
+// combinedHistory folds a set of components' days into one row. Where the
+// sampler recorded the row itself under key (see Rollups), its days are the
+// real time anything in it was wrong. Days from before that have only the
+// members' totals, and the longest of their downtimes is the closest
+// estimate, since theirs may or may not have overlapped. Each day takes the
+// larger of the two: both fall short of the truth if anything, and the
+// recorded one is exact once it covers the whole day.
+func combinedHistory(comps []model.Component, store *history.Store, key string, now time.Time) ([]model.Day, float64) {
 	days := make([]model.Day, HistoryDays)
 	for i := range days {
 		days[i].Date = now.UTC().AddDate(0, 0, i-HistoryDays+1).Format("2006-01-02")
@@ -302,6 +305,13 @@ func combinedHistory(comps []model.Component, now time.Time) ([]model.Day, float
 			if d.Downtime > days[i].Downtime {
 				days[i].Downtime = d.Downtime
 			}
+		}
+	}
+	if store != nil {
+		for i, d := range store.Days(key, HistoryDays, now) {
+			days[i].Status = model.Worst(days[i].Status, d.Status)
+			days[i].Observed = max(days[i].Observed, d.Observed)
+			days[i].Downtime = max(days[i].Downtime, d.Downtime)
 		}
 	}
 	return days, history.Uptime(days)

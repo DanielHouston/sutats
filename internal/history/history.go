@@ -48,18 +48,17 @@ func (s *Store) Record(now time.Time, comps []model.Component, maxGap time.Durat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now = now.UTC()
-	date := now.Format(dateLayout)
 	seen := map[string]bool{}
 	for _, c := range comps {
 		seen[c.Key()] = true
-		s.sample(now, date, c.Key(), c.Status, maxGap)
+		s.sample(now, c.Key(), c.Status, maxGap)
 		for _, sig := range c.Signals {
 			if sig.Kind != model.SignalPods && sig.Kind != model.SignalHTTP {
 				continue
 			}
 			k := SignalKey(c.Key(), sig.Name)
 			seen[k] = true
-			s.sample(now, date, k, sig.Status, maxGap)
+			s.sample(now, k, sig.Status, maxGap)
 		}
 	}
 	// Forget last-seen for keys that disappeared so a gap is not attributed
@@ -73,20 +72,37 @@ func (s *Store) Record(now time.Time, comps []model.Component, maxGap time.Durat
 	s.dirty = true
 }
 
-// sample attributes the time since the last sample for key to status.
-func (s *Store) sample(now time.Time, date, key string, status model.Status, maxGap time.Duration) {
-	elapsed := 0.0
-	if last, ok := s.lastSeen[key]; ok {
-		d := now.Sub(last)
-		if d > maxGap {
-			d = maxGap
-		}
-		if d > 0 {
-			elapsed = d.Seconds()
-		}
+// Gap is the time a sample at now accounts for: the time since the key's
+// last sample, capped at maxGap, or none for its first.
+func Gap(now, last time.Time, seen bool, maxGap time.Duration) time.Duration {
+	if !seen {
+		return 0
 	}
-	s.lastSeen[key] = now
+	return max(0, min(now.Sub(last), maxGap))
+}
 
+// SplitGap splits a sample's gap at the midnight (UTC) before now: the part
+// that fell on the day before, and the rest, so each day is credited with
+// its own time.
+func SplitGap(now time.Time, gap time.Duration) (before, after time.Duration) {
+	midnight := now.UTC().Truncate(24 * time.Hour)
+	before = max(0, midnight.Sub(now.Add(-gap)))
+	return before, gap - before
+}
+
+// sample attributes the time since the last sample for key to status.
+func (s *Store) sample(now time.Time, key string, status model.Status, maxGap time.Duration) {
+	last, seen := s.lastSeen[key]
+	before, after := SplitGap(now, Gap(now, last, seen, maxGap))
+	s.lastSeen[key] = now
+	if before > 0 {
+		s.add(now.Add(-after-time.Nanosecond).Format(dateLayout), key, status, before.Seconds())
+	}
+	s.add(now.Format(dateLayout), key, status, after.Seconds())
+}
+
+// add credits elapsed seconds at status to one day of key.
+func (s *Store) add(date, key string, status model.Status, elapsed float64) {
 	days := s.days[key]
 	if days == nil {
 		days = map[string]*model.Day{}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DanielHouston/sutats/internal/history"
 	"github.com/DanielHouston/sutats/internal/model"
 )
 
@@ -43,12 +44,16 @@ type Server struct {
 
 	// Series, when set, enables GET /api/v1/series.
 	Series SeriesFunc
+	// Version, when set, is shown in the footer.
+	Version string
 }
 
 // New builds a Server. ready reports whether the backing data source has
 // completed its first sync, for /readyz.
 func New(resolve Resolver, ready func() bool) (*Server, error) {
+	s := &Server{resolve: resolve, ready: ready, mux: http.NewServeMux()}
 	funcs := template.FuncMap{
+		"version":  func() string { return s.Version },
 		"pct":      pct,
 		"ago":      ago,
 		"when":     when,
@@ -60,11 +65,23 @@ func New(resolve Resolver, ready func() bool) (*Server, error) {
 		"bar": func(days []model.Day, label, key string, clickable bool) barData {
 			return barData{Days: days, Label: label, Key: key, Clickable: clickable && key != ""}
 		},
+		"now":       func(s model.Status, text string) nowData { return nowData{Status: s, Text: text} },
+		"nowWord":   nowWord,
+		"members":   members,
+		"okCount":   okCount,
+		"isToday":   isToday,
+		"todayFill": todayFill,
+		"clock":     clock,
+		"lastDays":  lastDays,
+		"uptime":    history.Uptime,
 		"subWithDetail": func(id string, s model.Signal, detail bool) subData {
 			return subData{ID: id, Signal: s, Detail: detail}
 		},
-		"signalKey": func(id, name string) string { return id + "::" + name },
-		"bad":       func(s model.Status) bool { return s >= model.StatusDegraded },
+		"signalKey":     func(id, name string) string { return id + "::" + name },
+		"axis":          axis,
+		"periodDates":   periodDates,
+		"periodSummary": periodSummary,
+		"bad":           func(s model.Status) bool { return s >= model.StatusDegraded },
 		"newestFirst": func(u []model.IncidentUpdate) []model.IncidentUpdate {
 			out := make([]model.IncidentUpdate, len(u))
 			for i, x := range u {
@@ -77,7 +94,7 @@ func New(resolve Resolver, ready func() bool) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
 	}
-	s := &Server{resolve: resolve, ready: ready, tmpl: tmpl, mux: http.NewServeMux()}
+	s.tmpl = tmpl
 
 	static, _ := fs.Sub(staticFS, "static")
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", cacheControl(http.FileServer(http.FS(static)))))
@@ -343,19 +360,27 @@ func when(t time.Time) string {
 	return t.UTC().Format("2 Jan 2006, 15:04 UTC")
 }
 
+// dayTitle describes one day of a bar, for its hover label and for screen
+// readers: "Sep 21 · Degraded · 12m down". Today is still running, so it
+// says so: "Today · Degraded · 12m down so far". It is history either way;
+// the current status is in the Now column after the bars.
 func dayTitle(d model.Day) string {
 	t, err := time.Parse("2006-01-02", d.Date)
 	label := d.Date
 	if err == nil {
-		label = t.Format("2 Jan")
+		label = t.Format("Jan 2")
+	}
+	soFar := ""
+	if d.Date == time.Now().UTC().Format("2006-01-02") {
+		label, soFar = "Today", " so far"
 	}
 	switch {
 	case d.Observed == 0:
-		return label + ": no data"
+		return label + " · No data"
 	case d.Downtime == 0:
-		return label + ": " + d.Status.Label()
+		return label + " · " + d.Status.Label() + soFar
 	default:
-		return fmt.Sprintf("%s: %s, %s of downtime", label, d.Status.Label(), humanDur(time.Duration(d.Downtime)*time.Second))
+		return fmt.Sprintf("%s · %s · %s down%s", label, d.Status.Label(), humanDur(time.Duration(d.Downtime)*time.Second), soFar)
 	}
 }
 

@@ -95,7 +95,8 @@ func TestIndexRenders(t *testing.T) {
 		`data-status="degraded"`,
 		"Elevated login failures",
 		"Scheduled maintenance",
-		`<span class="row__reason">5 of 5 ready</span>`,
+		// The Now column says why a component is in its state.
+		`<span class="now__text" title="5 of 5 ready">5 of 5 ready</span>`,
 		`<span class="sub__name sub__name--bad">Query API</span> <span class="sub__detail sub__detail--bad">200 · 2.6 s slow</span>`,
 		`<span class="sub__name">GraphQL</span> <span class="sub__detail">200 · 131 ms</span>`,
 		`aria-label="GraphQL, 90 days,`,
@@ -295,5 +296,16 @@ func TestPct(t *testing.T) {
 	}
 	if got := pct(0.99995); got != "100%" {
 		t.Errorf("pct = %q", got)
+	}
+}
+
+func TestFooterShowsVersion(t *testing.T) {
+	s := testServer(t)
+	if body := get(t, s, "/").Body.String(); strings.Contains(body, "foot__version") {
+		t.Fatal("no version set, but the footer shows one")
+	}
+	s.Version = "v1.0.2-32-g5e8b259"
+	if body := get(t, s, "/").Body.String(); !strings.Contains(body, `<p class="foot__version">sutats v1.0.2-32-g5e8b259</p>`) {
+		t.Fatal("footer is missing the version")
 	}
 }

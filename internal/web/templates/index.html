@@ -15,7 +15,6 @@
   <nav class="masthead__nav">
     {{range .Pages}}<a href="{{.URL}}">{{.Title}}</a>{{end}}
     <a href="/api/v1/status">JSON</a>
-    <span>Updated <time id="updated" datetime="{{rfc3339 .GeneratedAt}}">{{ago .GeneratedAt}}</time></span>
   </nav>
 </header>
 
@@ -25,13 +24,32 @@
 
 <footer class="foot">
   <p>Status is read live from the Kubernetes cluster. Uptime counts time a component was degraded or down over the last 90 days; planned maintenance is not counted.</p>
+  {{with version}}<p class="foot__version">sutats {{.}}</p>{{end}}
 </footer>
 <script src="/static/app.js" defer></script>
 </body>
 </html>
 
-{{/* One bar. Clickable cells are buttons that open a day breakdown. */}}
-{{define "bar"}}{{if .Clickable}}<div class="bar bar--clickable" data-key="{{.Key}}" aria-label="{{.Label}}">{{range .Days}}<button type="button" class="bar__day bar__day--{{.Status}}" data-date="{{.Date}}" title="{{dayTitle .}}" aria-label="{{dayTitle .}}"></button>{{end}}</div>{{else}}<div class="bar" role="img" aria-label="{{.Label}}">{{range .Days}}<i class="bar__day bar__day--{{.Status}}" title="{{dayTitle .}}"></i>{{end}}</div>{{end}}{{end}}
+{{/* One bar of history. Clickable cells are buttons that open a day
+     breakdown. Today's cell is filled as far as the day has gone. */}}
+{{define "bar"}}{{if .Clickable}}<div class="bar bar--clickable" data-key="{{.Key}}" aria-label="{{.Label}}">{{range .Days}}<button type="button" class="bar__day bar__day--{{.Status}}{{if isToday .Date}} bar__day--today{{end}}"{{if isToday .Date}} style="{{todayFill}}"{{end}} data-date="{{.Date}}" data-tip="{{dayTitle .}}" aria-label="{{dayTitle .}}"></button>{{end}}</div>{{else}}<div class="bar" role="img" aria-label="{{.Label}}">{{range .Days}}<i class="bar__day bar__day--{{.Status}}{{if isToday .Date}} bar__day--today{{end}}"{{if isToday .Date}} style="{{todayFill}}"{{end}} data-tip="{{dayTitle .}}"></i>{{end}}</div>{{end}}{{end}}
+
+{{/* The axis over the top bar: one empty slot per day, laid out exactly like
+     a bar, with each month's name over its first day and Today over the last.
+     Every bar shares the column, so this one axis serves them all; hovering
+     a day shows its date here and outlines it in every bar (app.js). */}}
+{{define "axis"}}<div class="axis" aria-hidden="true">{{range axis .}}<span class="axis__slot{{if .Mark}} axis__slot--mark{{end}}{{if .End}} axis__slot--end{{end}}" data-date="{{.Date}}">{{with .Label}}<span class="axis__label">{{.}}</span>{{end}}</span>{{end}}</div>{{end}}
+
+{{/* A row's uptime over the window its bar shows: 90 days, or the last 30
+     on a phone, where the stylesheet shows only those cells. */}}
+{{define "uptime"}}<span class="days-90">{{pct .Uptime}}</span><span class="days-30">{{pct (uptime (lastDays .History 30))}}</span>{{end}}
+
+{{/* What a run of days adds up to, for the title row. */}}
+{{define "summary"}}<b>{{.Uptime}} uptime</b>{{with .Down}} · {{.}} degraded or down{{end}} · {{.Observed}} observed{{end}}
+
+{{/* A row's current status, in its own column after the history: a mark
+     whose shape and colour say the state, the word, and a line on why. */}}
+{{define "now"}}<div class="row__now{{if bad .Status}} row__now--bad{{end}}"><span class="now__state"><i class="now__mark now__mark--{{.Status}}"></i>{{nowWord .Status}}</span>{{with .Text}}<span class="now__text" title="{{.}}">{{.}}</span>{{end}}</div>{{end}}
 
 {{/* One signal row under a component: label, thin bar, uptime. */}}
 {{define "sub"}}
@@ -39,12 +57,16 @@
 <div class="row row--sub">
   <div class="row__label" title="{{.Name}}{{with .Detail}} · {{.}}{{end}}{{with .CountNote}} · {{.}}{{end}}"><span class="sub__name{{if bad .Status}} sub__name--bad{{end}}">{{.Name}}</span> <span class="sub__detail{{if bad .Status}} sub__detail--bad{{end}}">{{.Detail}}</span>{{with .CountNote}}<span class="sub__note">{{.}}</span>{{end}}</div>
   <div class="row__bar">{{if .HasBar}}{{template "bar" (bar .History (printf "%s, 90 days, %s uptime" .Name (pct .Uptime)) (signalKey $.ID .Name) $.Detail)}}{{end}}</div>
-  <div class="row__num">{{if .HasBar}}{{pct .Uptime}}{{end}}</div>
+  {{if .HasBar}}{{template "now" (now .Status "")}}{{end}}
+  <div class="row__num">{{if .HasBar}}{{template "uptime" .}}{{end}}</div>
 </div>
 {{end}}
 {{end}}
 
 {{define "board"}}
+{{/* The summary: the headline, what is wrong, the whole system and the
+     incidents still open, on a band of its own above the components. */}}
+<div class="band summary">
 <section class="hero">
   <h1 class="hero__title">{{.Headline}}</h1>
   {{if .Problems}}
@@ -52,8 +74,7 @@
     {{range .Problems}}
     <li class="problem">
       <a href="#{{.Anchor}}">{{.Name}}</a>
-      <span class="problem__status">{{.Status.Label}}</span>
-      {{if .Reason}}<span class="problem__reason">{{.Reason}}</span>{{end}}
+      <span class="problem__what"><span class="problem__status">{{.Status.Label}}</span>{{if .Reason}} <span class="problem__reason">{{.Reason}}</span>{{end}}</span>
     </li>
     {{end}}
   </ul>
@@ -65,15 +86,28 @@
 </section>
 
 <div class="ledger ledger--system">
+  {{/* Titled like a day view: the dates, then what they add up to. */}}
+  <div class="row row--period">
+    {{$recent := lastDays .History 30}}
+    <div class="row__label"><span class="period__dates days-90">{{periodDates .History}}</span><span class="period__dates days-30">{{periodDates $recent}}</span></div>
+    <div class="row__bar">
+      {{with periodSummary .History .Uptime}}<span class="period__summary days-90">{{template "summary" .}}</span>{{end}}
+      {{with periodSummary $recent (uptime $recent)}}<span class="period__summary days-30">{{template "summary" .}}</span>{{end}}
+    </div>
+    <div class="row__now"><span class="now__state"><i class="now__mark now__mark--{{.Status}}"></i>Now</span><span class="now__text"><time id="updated" datetime="{{rfc3339 .GeneratedAt}}" title="Updated {{when .GeneratedAt}}">{{clock .GeneratedAt}}</time> · <span class="now__ago">{{ago .GeneratedAt}}</span></span></div>
+    <div class="row__num">90 days</div>
+  </div>
   <div class="row row--legend">
     <div class="row__label"></div>
-    <div class="row__bar"><div class="legend"><span>90 days ago</span><span>Today</span></div></div>
+    <div class="row__bar"><div class="days-90">{{template "axis" .History}}</div><div class="days-30">{{template "axis" (lastDays .History 30)}}</div></div>
+    <div class="row__now"></div>
     <div class="row__num"></div>
   </div>
   <div class="row row--system">
     <div class="row__label"><span class="row__name">All components</span></div>
     <div class="row__bar">{{template "bar" (bar .History (printf "Whole system, 90 days, %s uptime" (pct .Uptime)) "" false)}}</div>
-    <div class="row__num">{{pct .Uptime}}</div>
+    {{template "now" (now .Status (okCount (members .Groups)))}}
+    <div class="row__num">{{template "uptime" .}}</div>
   </div>
 </div>
 
@@ -83,6 +117,7 @@
   {{range .ActiveIncidents}}{{template "incident" .}}{{end}}
 </section>
 {{end}}
+</div>
 
 <section class="section section--components" aria-labelledby="components-h">
   <h2 id="components-h" class="visually-hidden">Components</h2>
@@ -102,7 +137,8 @@
         <span class="group__meta">{{plural (len .Components) "component" "components"}} · <span class="status status--{{.Status}}">{{.Status.Label}}</span></span>
       </div>
       <div class="row__bar">{{template "bar" (bar .History (printf "%s, 90 days, %s uptime" .Name (pct .Uptime)) "" false)}}</div>
-      <div class="row__num">{{pct .Uptime}}</div>
+      {{template "now" (now .Status (okCount .Components))}}
+      <div class="row__num">{{template "uptime" .}}</div>
     </div>
     {{end}}
     <div class="members" id="members-{{$ga}}"{{if .Collapsed}} hidden{{end}}>
@@ -113,14 +149,11 @@
         <div class="row__name">
           {{if .HasDetail}}<button type="button" class="row__toggle" data-target="subs-{{$a}}" aria-controls="subs-{{$a}}" aria-expanded="{{.Attention}}">{{.Name}}<span class="row__chev" aria-hidden="true"></span></button>{{else}}{{.Name}}{{end}}
         </div>
-        <div class="row__status">
-          <span class="status status--{{.Status}}">{{.Status.Label}}</span>
-          {{with .Reason}}<span class="row__reason">{{.}}</span>{{else}}{{with .PodsDetail}}<span class="row__reason">{{.}}</span>{{end}}{{end}}
-        </div>
         {{if .Description}}<div class="row__desc">{{.Description}}</div>{{end}}
       </div>
       <div class="row__bar">{{template "bar" (bar .History (printf "%s, 90 days, %s uptime" .Name (pct .Uptime)) .ID $detail)}}</div>
-      <div class="row__num">{{pct .Uptime}}</div>
+      {{template "now" (now .Status (or .Reason .PodsDetail))}}
+      <div class="row__num">{{template "uptime" .}}</div>
     </article>
     {{if .HasDetail}}
     <div class="subs" id="subs-{{$a}}"{{if not .Attention}} hidden{{end}}>
@@ -146,6 +179,8 @@
   {{end}}
 </section>
 
+{{/* The history, planned and past, on a band of its own below them. */}}
+<div class="band">
 {{if .Scheduled}}
 <section class="section" aria-labelledby="sched-h">
   <h2 id="sched-h" class="section__title">Scheduled maintenance</h2>
@@ -161,6 +196,7 @@
     <p class="quiet">No incidents in the last 30 days.</p>
   {{end}}
 </section>
+</div>
 {{end}}
 
 {{/* One incident as a single line: title, impact, latest word, when. The
