@@ -53,7 +53,8 @@ func (s *Store) Record(now time.Time, comps []model.Component, maxGap time.Durat
 		seen[c.Key()] = true
 		s.sample(now, c.Key(), c.Status, maxGap)
 		for _, sig := range c.Signals {
-			if sig.Kind != model.SignalPods && sig.Kind != model.SignalHTTP {
+			// Every row with a bar on the page, as the database records.
+			if !sig.HasBar() {
 				continue
 			}
 			k := SignalKey(c.Key(), sig.Name)

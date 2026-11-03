@@ -85,7 +85,8 @@ func TestSignalsRecordedSeparately(t *testing.T) {
 	c := model.Component{Name: "A", Status: model.StatusDegraded, Signals: []model.Signal{
 		{Kind: model.SignalPods, Name: "Pods", Status: model.StatusOperational},
 		{Kind: model.SignalHTTP, Name: "Health", Status: model.StatusDegraded},
-		{Kind: "config", Name: "Probe config", Status: model.StatusUnknown},
+		{Kind: model.SignalStability, Name: "Stability", Status: model.StatusDegraded},
+		{Kind: model.SignalConfig, Name: "Probe config", Status: model.StatusUnknown},
 	}}
 	s.Record(base, []model.Component{c}, time.Minute)
 	s.Record(base.Add(10*time.Second), []model.Component{c}, time.Minute)
@@ -97,6 +98,10 @@ func TestSignalsRecordedSeparately(t *testing.T) {
 	}
 	if d := s.Days(SignalKey("A", "Health"), 1, base); d[0].Downtime != 10 || d[0].Status != model.StatusDegraded {
 		t.Fatalf("health day = %+v", d[0])
+	}
+	// The Kubernetes checks have bars too, so they keep history as well.
+	if d := s.Days(SignalKey("A", "Stability"), 1, base); d[0].Downtime != 10 || d[0].Status != model.StatusDegraded {
+		t.Fatalf("stability day = %+v", d[0])
 	}
 	if d := s.Days(SignalKey("A", "Probe config"), 1, base); d[0].Observed != 0 {
 		t.Fatal("config signals should not be recorded")

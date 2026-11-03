@@ -15,8 +15,9 @@ services:
       - --mock
       - --title=${DEMO_TITLE:-Acme}
       - --listen=:8080
-      # Optional: serve the mock's team pages on their own hosts. Needs a
-      # wildcard DNS record, such as *.status-demo.example.com.
+      # Optional: serve the mock's team pages on their own hosts, such as
+      # {slug}-status-demo.example.com. Keep them one level under the
+      # domain, where a wildcard certificate still covers them.
       - --host=${DEMO_HOST:-}
       - --page-host=${DEMO_PAGE_HOST:-}
     environment:

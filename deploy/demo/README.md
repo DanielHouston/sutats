@@ -4,7 +4,7 @@
 without a Kubernetes cluster. It shows two groups of components with HTTP
 probes and Kubernetes checks, an active incident, scheduled maintenance,
 past incidents and 90 days of history. Clicking a day on a bar opens that
-day in 15-minute cells.
+day in 15-minute cells (hours on a phone).
 
 ## What it needs
 
@@ -61,22 +61,30 @@ Set these in the environment or in a `.env` file next to `compose.yaml`.
 | `SUTATS_IMAGE`      | `ghcr.io/danielhouston/sutats:1`  | Image to run; pin a version such as `:1.0.2` to stop updates. |
 | `DB_MEMORY`         | `512MB`                           | Memory TimescaleDB sizes itself for. Read only when the database is first created. |
 | `DEMO_HOST`         | unset                             | Host of the main page, such as `status-demo.example.com`. |
-| `DEMO_PAGE_HOST`    | unset                             | Host template for the team pages, such as `{slug}.status-demo.example.com`. |
+| `DEMO_PAGE_HOST`    | unset                             | Host template for the team pages, such as `{slug}-status-demo.example.com`. |
 
 The mock has two team pages, `edge` and `platform`. To show them, set both
-host variables and point a wildcard DNS record (`*.status-demo.example.com`)
-and the proxy at the demo. The main page then links to them. Without them
-the demo is one page with every component on it.
+host variables and point DNS and the proxy at the demo for each page host.
+The main page then links to them. Without them the demo is one page with
+every component on it.
+
+Keep the page hosts one level under your domain, as in
+`{slug}-status-demo.example.com`, not `{slug}.status-demo.example.com`. A
+wildcard certificate covers one level only, and some providers issue nothing
+deeper: Cloudflare's free certificate for `*.example.com` does not cover
+`edge.status-demo.example.com`, and browsers then fail with
+`ERR_SSL_VERSION_OR_CIPHER_MISMATCH`.
 
 In Coolify, no wildcard route is needed: list the three hosts as the
 `sutats` service's domains, separated by commas:
 
 ```text
-https://status-demo.example.com:8080,https://edge.status-demo.example.com:8080,https://platform.status-demo.example.com:8080
+https://status-demo.example.com:8080,https://edge-status-demo.example.com:8080,https://platform-status-demo.example.com:8080
 ```
 
 with `DEMO_HOST=status-demo.example.com` and
-`DEMO_PAGE_HOST={slug}.status-demo.example.com`.
+`DEMO_PAGE_HOST={slug}-status-demo.example.com`. Coolify applies new
+domains when it deploys, so redeploy after changing them.
 
 ## Health checks
 

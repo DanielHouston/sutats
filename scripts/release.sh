@@ -11,11 +11,12 @@
 #   1. checks the working tree is clean, HEAD is the source branch and is
 #      pushed to the development remote, and the version is new and higher
 #   2. runs go vet and the tests
-#   3. refuses to publish if the tree or the release notes contain any
-#      pattern from the private patterns file (one extended regex per line;
-#      it lives inside .git so it is never published itself)
-#   4. commits the tree on top of the public branch as whoever runs this,
-#      with the commit titles since the last release as notes
+#   3. refuses to publish if the tree, the release notes or the public
+#      name and email contain any pattern from the private patterns file
+#      (one extended regex per line; it lives inside .git so it is never
+#      published itself)
+#   4. commits the tree on top of the public branch under the public name
+#      and email, with the commit titles since the last release as notes
 #   5. pushes that commit and an annotated tag vX.Y.Z to the public remote,
 #      which makes CI build and publish the release images, and creates a
 #      GitHub release when the gh CLI is logged in
@@ -35,6 +36,12 @@
 #   SKIP_TESTS=1    do not run the tests
 #   NO_GH_RELEASE=1 push the tag but create no GitHub release
 #   SIGN=0          do not sign, even with a signing key configured
+#   PUBLIC_NAME     name on the public commit and tag    (git config
+#                   release.publicName, else user.name)
+#   PUBLIC_EMAIL    email on the public commit and tag   (git config
+#                   release.publicEmail, else user.email), such as a
+#                   GitHub noreply address; the signing key needs it as a
+#                   uid for the host to show the signatures as verified
 #
 # Tags exist under the same name on both remotes but point at different
 # commits, so the public remote must not fetch tags:
@@ -75,6 +82,13 @@ git fetch -q --no-tags "$PUBLIC_REMOTE" || true
 src=$(git rev-parse HEAD)
 [[ $src == "$(git rev-parse "$DEV_REMOTE/$SOURCE_BRANCH")" ]] ||
 	die "$SOURCE_BRANCH differs from $DEV_REMOTE/$SOURCE_BRANCH; push or pull first"
+
+# Who the public commit and tag are from. The development tag in step 6
+# keeps the ordinary git identity.
+pub_name=${PUBLIC_NAME:-$(git config release.publicName || git config user.name || true)}
+pub_email=${PUBLIC_EMAIL:-$(git config release.publicEmail || git config user.email || true)}
+[[ -n $pub_name && -n $pub_email ]] ||
+	die "no name or email for the public commit; set PUBLIC_NAME/PUBLIC_EMAIL or git config release.publicName/release.publicEmail"
 
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "$tag already exists here"
 git ls-remote --exit-code --tags "$DEV_REMOTE" "refs/tags/$tag" >/dev/null && die "$tag already exists on $DEV_REMOTE"
@@ -126,8 +140,12 @@ if [[ -f $FORBID_FILE ]]; then
 	if [[ -n $patterns ]]; then
 		leaks=$(git grep -n -I -E -f <(echo "$patterns") "$src" -- . || true)
 		msgleaks=$(echo "$message" | grep -n -E -f <(echo "$patterns") || true)
-		[[ -z $leaks && -z $msgleaks ]] ||
-			die "private details would be published:"$'\n'"$leaks"$'\n'"${msgleaks:+release notes: $msgleaks}"
+		identleak=$(echo "$pub_name <$pub_email>" | grep -E -f <(echo "$patterns") || true)
+		if [[ -n $leaks || -n $msgleaks || -n $identleak ]]; then
+			found=$(printf '%s\n' "$leaks" "${msgleaks:+release notes: $msgleaks}" \
+				"${identleak:+as the author and tagger: $identleak (set release.publicEmail)}" | grep -v '^$')
+			die "private details would be published:"$'\n'"$found"
+		fi
 		say "private scan clean ($(echo "$patterns" | wc -l) patterns)"
 	fi
 else
@@ -135,6 +153,8 @@ else
 fi
 
 # ---- 4. the public commit ----
+say "publishing as $pub_name <$pub_email>"
+export GIT_AUTHOR_NAME=$pub_name GIT_AUTHOR_EMAIL=$pub_email GIT_COMMITTER_NAME=$pub_name GIT_COMMITTER_EMAIL=$pub_email
 tree=$(git rev-parse "$src^{tree}")
 parent=$(git rev-parse -q --verify "refs/remotes/$PUBLIC_REMOTE/$PUBLIC_BRANCH" || true)
 if [[ -n $parent && $(git rev-parse "$parent^{tree}") == "$tree" ]]; then
@@ -162,6 +182,7 @@ if $sign && ! $dry; then
 	cat "$tagfile.sig" >>"$tagfile"
 fi
 tagobj=$(git mktag <"$tagfile")
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 echo
 echo "$message"

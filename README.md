@@ -11,7 +11,7 @@ in a ConfigMap or a file, or in TimescaleDB if you want minute-level detail.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png">
-  <img alt="A sutats status page: the headline says some systems are degraded and lists them, a 90-day bar for all components sits above an active incident, and the Edge group shows each component with its own bar, the API opened to its Kubernetes and HTTP probe rows." src="docs/screenshot-light.png">
+  <img alt="A sutats status page: a large headline says some systems are degraded and lists them, then a 90-day bar for all components with its current status beside it, and an active incident. Below, the Edge group shows each component with its own bar and current status, the API opened to its Kubernetes and HTTP probe rows." src="docs/screenshot-light.png">
 </picture>
 
 **Contents:**
@@ -26,9 +26,9 @@ in a ConfigMap or a file, or in TimescaleDB if you want minute-level detail.
 [HTTP endpoints](#http-endpoints) ·
 [Uptime history](#uptime-history)
 
-## How to add Workloads
+## How to add workloads
 
-Add the following annotations 
+Add these annotations to a Deployment, StatefulSet or DaemonSet:
 
 | Annotation                | Meaning                                              |
 | ------------------------- | ---------------------------------------------------- |
@@ -70,9 +70,13 @@ under the component and feed its status the same way:
 | Endpoints   | Services and EndpointSlices   | a Service has fewer ready endpoints than `min` (default 1) | a matching Service has no ready endpoints while pods are ready |
 | Ingress ... | Ingresses                     | no load balancer address                        |                                             |
 | Route ...   | OpenShift Routes              |                                                 | not admitted by the router                  |
+| TLS ...     | hosts of those Ingresses and Routes, plus `hosts=` | the certificate expires within `warn` (default 7 days) | the certificate has expired |
 
 Services are matched by selector against the workload's pod labels;
-Ingresses and Routes by the Services they point at.
+Ingresses and Routes by the Services they point at. A TLS host that cannot
+be reached shows as Unknown rather than as a failure; the HTTP probes cover
+reachability.
+
 ### Configuring the checks
 
 Each check is configured with one value: a mode, settings, or both.
@@ -148,9 +152,9 @@ The headline is the worst status of any component.
 
 Replica counts only say the pods passed their readiness probes. To check that
 the application actually answers, give the workload one or more URLs to probe.
-Each probe appears as a small chip on the component row with its latest
-result, and a failing probe changes the component status just like missing
-replicas would.
+Each probe gets its own row under the component, in an "HTTP probes"
+section, with its latest result and its own 90-day bar. A failing probe
+changes the component status just like missing replicas would.
 
 **One URL**
 
@@ -194,7 +198,7 @@ default), in parallel, each with its own timeout.
 | Expected status within `degraded_after`       | Operational                 |
 | Expected status but slower than `degraded_after` | Degraded                 |
 | Wrong status, body mismatch, timeout or connection error, 3 times in a row | Outage |
-| 1 or 2 failures in a row                      | Previous status kept, with the failure shown on the chip |
+| 1 or 2 failures in a row                      | Previous status kept, with the failure shown on the probe's row |
 
 A probe that has never succeeded shows as Unknown until it either succeeds or
 fails three times, so a freshly deployed broken endpoint is not hidden.
@@ -248,12 +252,17 @@ only the default page.
 
 Incidents live in ConfigMaps called
 `sutats-incidents` under the key `incidents.yaml`. A ConfigMap with that name
-in any namespace is picked up: teams keep theirs in their own namespace and it
-shows on the pages that namespace belongs to, and the one in the sutats
-namespace is for cluster-wide announcements.
+in any namespace is picked up: teams keep theirs in their own namespace, and
+an incident shows on the default page and on the pages that namespace
+belongs to.
 
-An incident can override where it appears with `pages: [payments, platform]`,
-or `pages: ["*"]` for every page. The default page always shows everything.
+An incident can say where it appears instead, with `pages: [payments,
+platform]`. The list replaces the namespace's pages, the default page
+included: add `default` to keep it there, or use `pages: ["*"]` for every
+page. For a cluster-wide announcement, such as one kept in the sutats
+namespace, set `pages: ["*"]`; without it, an incident in a namespace that
+is on no page shows on the default page only. Incidents read from
+`--incidents-file` belong to no namespace and show on every page.
 
 ```yaml
 incidents:
@@ -291,6 +300,14 @@ make image push IMAGE=registry.example.com/sutats
 
 # Edit the image, host and ingress class in deploy/base/sutats.yaml, then:
 kubectl apply -f deploy/base/sutats.yaml
+```
+
+That keeps uptime history in a ConfigMap. For minute-level history, change
+the password (in both places) in `deploy/base/timescaledb.yaml` and apply the
+whole base instead, which adds a single-node TimescaleDB:
+
+```bash
+make deploy              # kubectl apply -k deploy/base
 ```
 
 The manifest creates a `sutats` namespace, a read-only ClusterRole for
@@ -333,7 +350,7 @@ Then open http://localhost:8080.
 
 ## Flags
 
-Every flag also has an environment variable.
+Most flags also have an environment variable.
 
 | Flag                     | Env                          | Default                      |
 | ------------------------ | ---------------------------- | ---------------------------- |
@@ -349,7 +366,7 @@ Every flag also has an environment variable.
 | `--history`              | `SUTATS_HISTORY`             | `auto` (database if `DATABASE_URL`, else configmap in-cluster, else file) |
 | `--database-url`         | `DATABASE_URL`               | unset                        |
 | `--data-dir`             | `SUTATS_DATA_DIR`            | `/data` (file mode)          |
-| `--state-namespace`      | `POD_NAMESPACE`              | namespace for state ConfigMaps and the Lease |
+| `--state-namespace`      | `POD_NAMESPACE`              | the pod's own namespace (where the state ConfigMaps and the Lease go) |
 | `--leader-election`      |                              | `true`                       |
 | `--interval`             |                              | `15s`                        |
 | `--probe-parallel`       |                              | `16`                         |
@@ -357,6 +374,8 @@ Every flag also has an environment variable.
 | `--show-internals`       | `SUTATS_SHOW_INTERNALS`      | `false` (see [HTTP endpoints](#http-endpoints)) |
 | `--mock`                 | `SUTATS_MOCK`                | `false`                      |
 | `--debug`                | `SUTATS_DEBUG`               | `false`                      |
+| `--seed-history`         |                              | `0`. One-shot: write N days of invented history into the database, then exit (demo and trial installs only) |
+| `--version`              |                              | Print the version and exit   |
 
 ## HTTP endpoints
 
@@ -386,8 +405,16 @@ Every 15 seconds the effective status of each component and each of its
 signals is recorded into a per-day bucket. A day's bar colour is the worst
 status that lasted any time that day (a workload caught mid-startup on its
 very first sample does not colour the day). The uptime percentage is the share of observed time the
-component was neither degraded nor down over the last 90 days. Maintenance is
-excluded.
+component was neither degraded nor down over the last 90 days. Time under
+maintenance counts as up, not as downtime.
+
+A sample just after midnight splits its time between the two days.
+
+The "All components" bar and each group's bar are recorded the same way, as
+rows of their own: at every sample, their status is the worst of their
+members', so their downtime is the time anything in them was wrong, even when
+members failed at different times. Days from before v1.1.0, which did not
+record these rows, fall back to the longest downtime of any one member.
 
 Where history lives depends on `--history`:
 
