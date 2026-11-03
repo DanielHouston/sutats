@@ -10,7 +10,7 @@ name: sutats-demo
 
 services:
   sutats:
-    image: ${SUTATS_IMAGE:-ghcr.io/danielhouston/sutats:1}
+    image: ${SUTATS_IMAGE:-ghcr.io/danielhouston/sutats:latest}
     command:
       - --mock
       - --title=${DEMO_TITLE:-Acme}
